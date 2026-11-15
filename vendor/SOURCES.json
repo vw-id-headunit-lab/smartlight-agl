@@ -1,0 +1,32 @@
+[
+  {
+    "path": "json/__init__.py",
+    "source": "https://raw.githubusercontent.com/python/cpython/v2.7.18/Lib/json/__init__.py",
+    "sha256": "18d9cde951da7aa69eb05f4251a6aa56d61e23c41b5507298753fbc86e9762a6"
+  },
+  {
+    "path": "json/decoder.py",
+    "source": "https://raw.githubusercontent.com/python/cpython/v2.7.18/Lib/json/decoder.py",
+    "sha256": "c9348da34b84d7c349a2ce270d56b638fe0c321f166372f50202fcf5474787f1"
+  },
+  {
+    "path": "json/encoder.py",
+    "source": "https://raw.githubusercontent.com/python/cpython/v2.7.18/Lib/json/encoder.py",
+    "sha256": "c6c05152b92f9d8ecf1d6d8b937a8cc6ee202015ba48d569e77f51dc36d58126"
+  },
+  {
+    "path": "json/scanner.py",
+    "source": "https://raw.githubusercontent.com/python/cpython/v2.7.18/Lib/json/scanner.py",
+    "sha256": "e581b57721541d107525339494d9ad32504037008e64cd2dd1140ee75a0b7a42"
+  },
+  {
+    "path": "urlparse.py",
+    "source": "https://raw.githubusercontent.com/python/cpython/v2.7.18/Lib/urlparse.py",
+    "sha256": "b36821cfe8a6276b9a3e7af7da9886e0984f3852f56f506fea7de4453273b706"
+  },
+  {
+    "path": "LICENSE",
+    "source": "https://raw.githubusercontent.com/python/cpython/v2.7.18/LICENSE",
+    "sha256": "de4d1f2d2ad5ad0cfd1657a106476b31cb5db5ef9d1ff842b237c0c81f0c8a23"
+  }
+]

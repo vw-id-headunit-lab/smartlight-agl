@@ -1,0 +1,31 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated test reports, packages and local deployment records
+/artifacts/
+/dist/
+/evidence/
+/backup*/
+/verification.json
+/delivery-verification.json
+/baseline-smartlight-contract.json
+/*.patch
+*.log
+*.jsonl
+
+# Runtime state and credentials
+.env
+.env.*
+*.pem
+*.key
+*auth*.txt
+/smartlight-*.json
+/light-*.json
+
+# Editor and desktop files
+.DS_Store
+.idea/
+.vscode/
