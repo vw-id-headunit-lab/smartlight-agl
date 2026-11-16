@@ -28,20 +28,30 @@ SmartLight 使用当前提供的主机地址；导航服务仍按其实际注册
 ```sh
 HOST='http://[fd53:7cb8:383:3::73]:49520'
 LIGHT="$HOST/smartlight/"
-NAV='http://HEADUNIT_HOST:NAV_PORT/simplenavigation/'
+REGISTRY='http://[::1]:80'
 
 # 预演：轮询当前 CarPlay 机动，零灯效写入
-sh carplay_light.sh --base "$LIGHT" --nav-base "$NAV"
+sh carplay_light.sh --base "$LIGHT" --nav-registry "$REGISTRY"
 
-# 实际联动：每个新机动至多一次短请求，默认 2 秒后撤销
-sh carplay_light.sh --base "$LIGHT" --nav-base "$NAV" \
-  --apply --interval 0.5 --hold 2 --state-dir /tmp/carplay-light-session
+# 实际联动：接近转弯时反复重发灯效，过弯后停止
+sh carplay_light.sh --base "$LIGHT" --nav-registry "$REGISTRY" \
+  --apply --interval 0.5 --hold 2 --max-duration 40 \
+  --state-dir /tmp/carplay-light-session
 ```
 
 `HOST` 是 SmartLight 地址，单引号内使用 `http://`，不要加反斜杠。
-`NAV` 中的 `HEADUNIT_HOST` 和 `NAV_PORT` 仍为导航服务占位值；未确认它与
-SmartLight 共用端口。脚本不会自动建立 AGL/QNX 转发，也不把
-Android/电脑的 `[::1]` 当成 QNX 回环。
+
+**导航服务地址不要猜端口。** 车机的 VIWI 注册中心只回答
+`GET /?name=<服务名>`，其它路径一律 307；用 `--nav-registry` 让脚本自己解析，
+或手动查：
+
+```sh
+curl -g --noproxy '*' "$REGISTRY/?name=simplenavigation"
+```
+
+`-g` 与 `--noproxy '*'` 都不能省。导航桥在车机本机（`[::1]`），
+SmartLight 在另一台 VM（`fd53:7cb8:383:3::73`）；脚本不会自动建立
+AGL/QNX 转发，也不把 Android/电脑的 `[::1]` 当成 QNX 回环。
 
 需要鉴权时分别指定：
 

@@ -67,18 +67,33 @@ AGL 与 QNX 的 `[::1]` 分别指向各自系统，不能直接互换。脚本�
 # SmartLight 使用当前提供的地址
 HOST='http://[fd53:7cb8:383:3::73]:49520'
 BASE="$HOST/smartlight/"
-# 导航服务地址需从其实际注册信息取得
-NAV_BASE='http://HEADUNIT_HOST:NAV_PORT/simplenavigation/'
+# 导航服务：交给注册中心解析（推荐）
+REGISTRY='http://[::1]:80'
 ```
 
-上述 `HOST` 是 SmartLight 地址；`NAV_BASE` 中的 `HEADUNIT_HOST`、`NAV_PORT` 仍为导航服务占位值，应从其实际注册信息取得，不直接套用 SmartLight 的 49520 端口。
-两套服务可能位于不同主机或端口；脚本不自动发现地址，也不建立 AGL/QNX 转发。
+**不要把导航服务端口写死或猜。** 车机上有一个 VIWI 服务注册中心，
+它只回答 `GET /?name=<服务名>`，**其它路径一律 307 重定向** ——
+所以把 `?name=` 以外的地址当成服务地址会得到 `HTTP 307`。
+
+查实际地址：
+
+```sh
+curl -g --noproxy '*' "$REGISTRY/?name=simplenavigation"
+# → {"data":[{"name":"simplenavigation","uri":"http://[::1]:49533/simplenavigation/"}]}
+```
+
+两个参数不能省：`-g`（否则 `[::1]` 会被 curl 当成通配符）、`--noproxy '*'`（否则可能走代理）。
+
+脚本也能自己解析：给 `--nav-registry` 即可，**不需要再传 `--nav-base`**。
+
+两套服务可能位于不同主机或端口：导航桥在车机本机（`[::1]`），
+SmartLight 在另一台 VM（`fd53:7cb8:383:3::73`）；脚本不建立 AGL/QNX 转发。
 
 ### 2. 先只读预演
 
 ```sh
 # 读取 10 次当前导航状态后退出，不创建灯效请求
-sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" --iterations 10
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" --iterations 10
 ```
 
 检查 `carplay_snapshot` 日志：开始导航后应能读到当前机动的 `stage` 和
@@ -90,7 +105,7 @@ sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" --iterations 10
 
 ```sh
 # 持续运行；每个新机动至多请求一次，默认目标保持 2 秒后撤销
-sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" \
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
   --apply --interval 0.5 --hold 2 --state-dir /tmp/smartlight-carplay
 ```
 
@@ -104,7 +119,7 @@ sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" \
 分别准备权限为 600 的凭据文件，内容为完整的 Authorization 值：
 
 ```sh
-sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" \
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
   --auth-file /path/to/smartlight-header.txt \
   --nav-auth-file /path/to/navigation-header.txt \
   --apply --state-dir /tmp/smartlight-carplay

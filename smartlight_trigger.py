@@ -63,6 +63,33 @@ def origin(url):
     return (p.scheme.lower(), (p.hostname or '').lower(),
             p.port or (443 if p.scheme == 'https' else 80))
 
+def resolve_service(registry, service, timeout=3.0):
+    """Resolve a VIWI service URI from the head unit's service registry.
+
+    The registry answers GET /?name=<service> with {"data":[{"name","uri"}]}.
+    Any other path on that port redirects, so guessing a port is unreliable:
+    always ask the registry instead.
+    """
+    base = base_url(registry)
+    url = base + '?name=' + service
+    code, raw, _location = curl_request('GET', url, {'Accept': 'application/json'}, None, timeout)
+    if not 200 <= code < 300:
+        raise Failure('Service registry answered HTTP %d for %s' % (code, service))
+    try:
+        doc = json.loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeError):
+        raise Failure('Service registry response is not UTF-8 JSON')
+    rows = doc.get('data') if isinstance(doc, dict) else None
+    if not isinstance(rows, list):
+        raise Failure('Service registry response has no data list')
+    for row in rows:
+        if isinstance(row, dict) and row.get('name') == service:
+            uri = row.get('uri')
+            if isinstance(uri, STRING) and uri:
+                return base_url(uri)
+    raise Failure('Service %s is not registered' % service)
+
+
 def base_url(value):
     p = urlsplit(value)
     if (p.scheme not in ('http', 'https') or not p.hostname or
@@ -156,7 +183,12 @@ class Client(object):
                     detail = ': ' + message[:256]
             except (ValueError, UnicodeError):
                 pass
-            raise Failure('HTTP %s on %s%s; no automatic mutation retry' % (code, method, detail))
+            hint = ''
+            if 300 <= code < 400:
+                hint = ('; this looks like the VIWI service registry, not the service'
+                        ' itself - resolve it with --nav-registry')
+            raise Failure('HTTP %s on %s%s%s; no automatic mutation retry' %
+                          (code, method, detail, hint))
         if len(raw) > 2 * 1024 * 1024:
             raise Failure('Response exceeds 2 MiB')
         if not raw.strip():

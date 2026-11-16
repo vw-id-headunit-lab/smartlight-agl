@@ -123,7 +123,8 @@ class NavigationSource(object):
                         maneuver.get('mainType'), maneuver.get('directionType')),
                 'direction': direction, 'stage': stage,
                 'mainType': maneuver.get('mainType'),
-                'directionType': maneuver.get('directionType')}
+                'directionType': maneuver.get('directionType'),
+                'distance': maneuver.get('distance')}
 
     def still_current(self, key):
         """Revalidate after light preflight, before any queue mutation."""
@@ -137,7 +138,7 @@ class NavigationSource(object):
             return False
         rows = light.items(self.client.request('GET', key[1])[1])
         return (len(rows) == 1 and rows[0].get('id') == key[2] and
-                rows[0].get('stage') == 'execute' and
+                rows[0].get('stage') in ('execute', 'follow') and
                 rows[0].get('mainType') == key[3] and
                 rows[0].get('directionType') == key[4])
 
@@ -316,14 +317,35 @@ class Controller(object):
             self.fired = True
             return
         direction = event.get('direction')
-        if event.get('stage') != 'execute' or direction not in ('left', 'right'):
+        stage = event.get('stage')
+        if direction not in ('left', 'right'):
             self.sink.stop()
             self.until = None
             return
+        if stage == 'execute':
+            # 原厂/内置导航语义：进入执行阶段即触发，不看距离。
+            pass
+        elif stage == 'follow':
+            # CarPlay 只会停留在 follow；用距离近似“该转弯了”。
+            dist = event.get('distance')
+            if not (isinstance(dist, (int, float)) and dist <= 150):
+                self.sink.stop()
+                self.until = None
+                return
+        else:
+            self.sink.stop()
+            self.until = None
+            return
+        # 持续型：hold 到期后若仍在接近同一机动，则重新打一次，
+        # 直到离开 near 或累计超过 max_duration（由上方检查兜底）。
+        if self.fired and self.until is None and self.started is not None:
+            if now - self.started <= self.max_duration:
+                self.fired = False
         if not self.fired:
             # Mark before mutation: a failed/unknown POST must not be retried.
             self.fired = True
-            self.started = now
+            if self.started is None:
+                self.started = now
             if self.sink.start(direction):
                 self.until = self.clock() + self.hold
 
@@ -339,6 +361,9 @@ class CommandLine(object):
     HELP = '''Usage: carplay_monitor.py --nav-base URI --base URI [options]
 
   --nav-base URI              Existing simplenavigation service base
+  --nav-registry URI          VIWI service registry (e.g. http://[::1]:80); when
+                              given, simplenavigation is resolved from it and
+                              --nav-base is not required
   --base URI                  Existing SmartLight service base
   --nav-advertised-base URI    Explicit navigation URI prefix mapping
   --advertised-base URI        Explicit SmartLight URI prefix mapping
@@ -359,7 +384,8 @@ class CommandLine(object):
 
     def parse_args(self, argv):
         result = light.Options()
-        values = {'nav_base': None, 'base': None, 'nav_advertised_base': None,
+        values = {'nav_base': None, 'nav_registry': None, 'base': None,
+                  'nav_advertised_base': None,
                   'advertised_base': None, 'nav_auth_file': None, 'auth_file': None,
                   'interval': 0.5, 'timeout': 2.0, 'hold': 2.0,
                   'max_duration': 30.0, 'state_dir': None, 'iterations': 0, 'apply': False}
@@ -389,8 +415,8 @@ class CommandLine(object):
             else:
                 self.error('Unknown option ' + token)
             i += 1
-        if not values['base'] or not values['nav_base']:
-            self.error('--base and --nav-base are required')
+        if not values['base'] or not (values['nav_base'] or values['nav_registry']):
+            self.error('--base and either --nav-base or --nav-registry are required')
         for name, low, high in [('interval', 0.1, 5), ('timeout', 0.1, 15),
                                 ('hold', 0.1, 5), ('max_duration', 1, 300)]:
             if not low <= values[name] <= high:
@@ -411,6 +437,9 @@ def main(argv=None):
     sink, controller = None, None
     status = 0
     try:
+        if args.nav_registry:
+            args.nav_base = light.resolve_service(
+                args.nav_registry, 'simplenavigation', args.timeout)
         nav = light.Client(args.nav_base, read_auth(args.nav_auth_file), args.timeout,
                            args.nav_advertised_base)
         lamps = light.Client(args.base, read_auth(args.auth_file), args.timeout,

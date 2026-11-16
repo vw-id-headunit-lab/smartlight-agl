@@ -10,7 +10,8 @@ import tempfile
 import threading
 import time
 import unittest
-from http.server import ThreadingHTTPServer
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlsplit, parse_qs
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -102,15 +103,24 @@ class DirectionAndController(unittest.TestCase):
         for m,d in [(13,0),(13,255),(1,64),(True,64),(13,'64')]:
             self.assertIsNone(cp.turn_direction(m,d))
 
-    def test_pulse_once_deadline_stop_and_new_maneuver(self):
+    def test_pulse_repeats_while_near_stops_on_leave_and_new_maneuver(self):
+        # 内置导航会在转弯过程中每 2-4 秒重发一条 queuedpurpose（实车抓取），
+        # 因此 hold 到期后只要仍在接近同一机动，就应再打一次。
         now=[0];sink=FakeSink();c=cp.Controller(sink,0.5,30,lambda:now[0])
         event={'key':('c','m','1'),'direction':'left','stage':'execute'}
-        c.step(event);now[0]=0.2;c.step(event);now[0]=0.6;c.step(event)
+        c.step(event)
         self.assertEqual(1,len([x for x in sink.calls if x[0]=='start']))
-        c.step(None);now[0]=1;c.step(event)
+        now[0]=0.2;c.step(event)
+        self.assertEqual(1,len([x for x in sink.calls if x[0]=='start']))
+        now[0]=0.6;c.step(event)
         self.assertEqual(2,len([x for x in sink.calls if x[0]=='start']))
-        c.step(dict(event,key=('c','new','2'),direction='right'))
+        c.step(None);now[0]=1;c.step(event)
         self.assertEqual(3,len([x for x in sink.calls if x[0]=='start']))
+        c.step(dict(event,key=('c','new','2'),direction='right'))
+        self.assertEqual(4,len([x for x in sink.calls if x[0]=='start']))
+        # 超过 max_duration 后不再重发
+        now[0]=100;c.step(dict(event,key=('c','new','2'),direction='right'))
+        self.assertEqual(4,len([x for x in sink.calls if x[0]=='start']))
 
     def test_long_follow_before_execute_still_gets_one_pulse(self):
         now=[0];sink=FakeSink();c=cp.Controller(sink,clock=lambda:now[0])
@@ -130,16 +140,39 @@ class DirectionAndController(unittest.TestCase):
         now[0]=9
         with self.assertRaises(light.Failure):c.step(None)
 
+class RegistryHandler(BaseHTTPRequestHandler):
+    """Mock VIWI service registry: only ?name= is answered, everything else 307."""
+    services = {}
+    def log_message(self, *a): pass
+    def do_GET(self):
+        parsed = urlsplit(self.path)
+        name = parse_qs(parsed.query).get('name', [None])[0]
+        if not name:
+            # 与真机一致：除 ?name= 之外的路径一律重定向
+            self.send_response(307); self.send_header('Location','/'); self.end_headers(); return
+        uri = self.services.get(name)
+        rows = [{'name':name,'uri':uri}] if uri else []
+        body = json.dumps({'data':rows}).encode()
+        self.send_response(200); self.send_header('Content-Type','application/json')
+        self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
+
+
 class Integration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         cls.thread=threading.Thread(target=cls.server.serve_forever,daemon=True);cls.thread.start()
         cls.origin='http://127.0.0.1:%d'%cls.server.server_port
+        RegistryHandler.services={'simplenavigation': cls.origin+'/simplenavigation/'}
+        cls.registry=ThreadingHTTPServer(('127.0.0.1',0),RegistryHandler)
+        cls.registry_thread=threading.Thread(target=cls.registry.serve_forever,daemon=True)
+        cls.registry_thread.start()
+        cls.registry_origin='http://127.0.0.1:%d'%cls.registry.server_port
 
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown();cls.server.server_close();cls.thread.join()
+        cls.registry.shutdown();cls.registry.server_close();cls.registry_thread.join()
         out=ROOT/'artifacts';out.mkdir(exist_ok=True)
         (out/'carplay-verification.json').write_text(json.dumps({'kind':'loopback-mock-not-vehicle',
                'runs':RUNS,'runtime':sys.version,'vehicle_tested':False},ensure_ascii=False,indent=2)+'\n',encoding='utf8')
@@ -152,8 +185,9 @@ class Integration(unittest.TestCase):
 
     def tearDown(self):self.temp.cleanup()
 
-    def run_monitor(self, options=(), expected=0, interrupted=False):
-        cmd=[sys.executable,str(ROOT/'carplay_monitor.py'),'--nav-base',self.origin+'/simplenavigation/',
+    def run_monitor(self, options=(), expected=0, interrupted=False, nav_args=None):
+        nav = nav_args if nav_args is not None else ['--nav-base', self.origin+'/simplenavigation/']
+        cmd=[sys.executable,str(ROOT/'carplay_monitor.py')]+nav+[
              '--base',self.origin+'/smartlight/','--interval','0.1','--hold','0.3','--timeout','1',
              '--state-dir',str(self.dir/'states'),'--iterations','5']+list(options)
         if interrupted:
@@ -172,6 +206,23 @@ class Integration(unittest.TestCase):
         self.assertEqual(expected,result.returncode,(result.stdout,result.stderr))
         return result,fixture
 
+    def test_nav_registry_resolves_service_without_nav_base(self):
+        # 用户不该靠猜端口：给出注册中心即可，服务地址由其回答解析。
+        result,f=self.run_monitor(['--iterations','3'],
+                                  nav_args=['--nav-registry',self.registry_origin])
+        self.assertFalse(f['writes'])
+        self.assertIn('carplay_snapshot',result.stdout)
+
+    def test_unknown_service_on_registry_fails_closed(self):
+        RegistryHandler.services={}
+        try:
+            result,f=self.run_monitor(['--iterations','1'],
+                                      expected=1,
+                                      nav_args=['--nav-registry',self.registry_origin])
+        finally:
+            RegistryHandler.services={'simplenavigation': self.origin+'/simplenavigation/'}
+        self.assertIn('not registered',result.stdout+result.stderr)
+
     def test_dry_run_reads_current_reference_no_mutations(self):
         result,f=self.run_monitor()
         self.assertFalse(f['writes']);self.assertEqual(self.baseline,f['queue'])
@@ -180,7 +231,13 @@ class Integration(unittest.TestCase):
 
     def test_apply_real_name_relative_uri_location_and_rollback(self):
         result,f=self.run_monitor(['--apply'])
-        self.assertEqual(['POST','DELETE'],[x['method'] for x in f['writes']])
+        # 持续模式下可能有多轮 POST/DELETE；每轮都必须成对、body 一致。
+        methods=[x['method'] for x in f['writes']]
+        self.assertTrue(methods, 'expected at least one mutation')
+        self.assertEqual('POST', methods[0])
+        self.assertEqual(0, len(methods) % 2, methods)
+        for i in range(0, len(methods), 2):
+            self.assertEqual(['POST','DELETE'], methods[i:i+2])
         self.assertEqual({'name':'15','purpose':'/smartlight/purposes/left-id'},f['writes'][0]['body'])
         self.assertEqual(self.baseline,f['queue'])
         state=json.loads(next((self.dir/'states').glob('carplay-*.json')).read_text())
