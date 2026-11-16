@@ -24,8 +24,11 @@ jobs:
         run: |
           sh -n trigger_light.sh
           sh -n rollback.sh
+          sh -n carplay_light.sh
       - name: Run loopback regression tests and check vendored hashes
         run: python tests/test_trigger.py
+      - name: CarPlay source and queue lifecycle tests
+        run: python tests/test_carplay.py
       - name: Build runtime archive
         run: python tools/build_release.py
       - name: Keep test reports

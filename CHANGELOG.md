@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add Python 2.7/3 CarPlay navigation monitoring through the existing
+  `simplenavigation` HTTP service; default to read-only polling.
+- Reuse real-purpose selection, relative references, durable Location identity
+  and standalone rollback; preserve the existing manual commands.
+- Add one-pulse-per-current-maneuver lifecycle, source revalidation, interruption
+  cleanup, local HTTP regression tests, launcher and release packaging.
+
 - List all purpose pages and inspect service state with read-only commands.
 - Select navigation turns with `--direction left`, `--direction right`, `左转`,
   or `右转`, matched against live service metadata.

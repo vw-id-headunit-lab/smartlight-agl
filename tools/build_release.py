@@ -11,6 +11,7 @@ import tarfile
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     'smartlight_trigger.py', 'agl_runtime.py', 'trigger_light.sh', 'rollback.sh',
+    'carplay_monitor.py', 'carplay_light.sh', 'docs/carplay.md',
     'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
     'docs/troubleshooting.md', 'docs/design.md', 'docs/testing.md',
     'vendor/SOURCES.json', 'vendor/LICENSE', 'vendor/urlparse.py',

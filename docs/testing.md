@@ -6,7 +6,9 @@ Use Python 3.10+ and curl on Linux or macOS:
 
 ```sh
 python3 tests/test_trigger.py
+python3 tests/test_carplay.py
 sh -n trigger_light.sh rollback.sh
+sh -n carplay_light.sh
 python3 tools/build_release.py
 ```
 
@@ -52,3 +54,8 @@ absence. Right-turn matching was checked by a dry run.
 These observations cover one setup. Original field captures, specifications,
 addresses, and backups remain outside this public repository. Default CI
 requires no vehicle access.
+
+The CarPlay suite writes `artifacts/carplay-verification.json` with literal
+commands, stdout/stderr, statuses, navigation reads and queue changes. It uses
+the same local SmartLight contract mock plus a separate simplenavigation
+resource tree. See [CarPlay](carplay.md) for the new runtime's behavior and limits.
