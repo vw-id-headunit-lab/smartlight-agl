@@ -30,7 +30,21 @@ sh rollback.sh --state /tmp/实际状态文件.json
 
 保留日志和状态，恢复连通后重跑 `rollback.sh --state ...`。有已保存的 `queue_uri` 时只处理这个 URI。
 
-POST 结果不明且没有 Location 时，不能仅凭公共用途名称判断本次创建了哪项。脚本会停止，不猜测删除目标。结合服务端记录人工确认；不要批量清队列。`--confirm-absent` 只兼容旧 v1 的独有随机名称状态，不能解除新 v2 的身份要求。
+手动触发和 rollback 在 POST 结果不明且没有 Location 时停止，不能仅凭公共用途
+名称判断本次创建了哪项。结合服务端记录人工确认；不要批量清队列。
+`--confirm-absent` 只兼容旧 v1 的独有随机名称状态，不能解除新 v2 的身份要求。
+
+CarPlay 监控按连续运行策略忽略 POST 失败并记录 `carplay_post_ignored`：
+没有 Location 时删除本次本地状态，继续轮询；有 Location 时先尝试清理该 URI，
+清理失败也记入日志并忽略本次 POST，不留下待处理状态。
+旧版本遗留的无 Location 状态也在启动时忽略。下一次灯效仍按 `--hold` 间隔
+重新检查导航和队列，不在 HTTP 层重试 POST。超时可能发生在服务端接受之后，
+忽略失败不代表确认未入队，也不触发按名称清队列。
+
+CarPlay 监控遇到有 Location 的未完成状态或清理失败时返回退出码 78。systemd 启动器应配置
+`RestartPreventExitStatus=78`，避免每隔几秒重启却始终被同一状态挡住。
+普通网络启动故障仍可重启。HTTP 500 表示服务端处理失败，
+`curl exit 28` 表示超过请求时限，两者都不能仅凭错误码推断请求没有入队。
 
 ## 接口成功但没有亮灯
 

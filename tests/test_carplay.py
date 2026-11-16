@@ -48,6 +48,12 @@ class Handler(upstream.Handler):
             return
 
     def handle_request(self):
+        if self.command=='DELETE':
+            with upstream.LOCK:
+                if upstream.FIXTURE.get('delete_error'):
+                    upstream.FIXTURE['requests'].append({'method':'DELETE','path':self.path})
+                    upstream.FIXTURE['writes'].append({'method':'DELETE','path':self.path})
+                    self.send(500);return
         if self.path.startswith('/simplenavigation/'):
             with NAV_LOCK:
                 NAV['requests'].append({'path':self.path, 'method':self.command})
@@ -146,6 +152,22 @@ class DirectionAndController(unittest.TestCase):
         now=[10];sink=FakeSink();c=cp.Controller(sink,clock=lambda:now[0]);c.step(None)
         now[0]=9
         with self.assertRaises(light.Failure):c.step(None)
+
+    def test_failed_post_waits_for_next_pulse_and_accepts_next_turn(self):
+        class SkippedSink(FakeSink):
+            def start(self,direction):
+                self.calls.append(('start',direction))
+                return False
+        now=[0];sink=SkippedSink();c=cp.Controller(sink,0.5,30,lambda:now[0])
+        event={'key':('c','a','1'),'direction':'left','stage':'execute'}
+        c.step(event)
+        now[0]=0.1;c.step(event)
+        now[0]=0.49;c.step(event)
+        self.assertEqual(1,len([x for x in sink.calls if x[0]=='start']))
+        now[0]=0.51;c.step(event)
+        self.assertEqual(2,len([x for x in sink.calls if x[0]=='start']))
+        c.step(dict(event,key=('c','b','2'),direction='right'))
+        self.assertEqual(('start','right'),sink.calls[-1])
 
 class RegistryHandler(BaseHTTPRequestHandler):
     """Mock VIWI service registry: only ?name= is answered, everything else 307."""
@@ -256,7 +278,7 @@ class Integration(unittest.TestCase):
 
     def test_right_mapping_and_change_clear_old_first(self):
         reset_nav(change_at=3)
-        result,f=self.run_monitor(['--apply'])
+        result,f=self.run_monitor(['--apply','--hold','5'])
         self.assertEqual(['POST','DELETE','POST','DELETE'],[x['method'] for x in f['writes']])
         self.assertEqual('14',f['writes'][2]['body']['name'])
         self.assertEqual(self.baseline,f['queue'])
@@ -316,27 +338,117 @@ class Integration(unittest.TestCase):
         self.assertFalse(f['writes'])
         self.assertTrue((states/'carplay-monitor.lock').is_dir())
 
-    def test_missing_location_stops_and_retains_recovery_state(self):
+    def test_missing_location_is_ignored_without_pending_state(self):
         upstream.reset(no_location=True)
-        result,f=self.run_monitor(['--apply'],expected=1)
+        result,f=self.run_monitor(['--apply'])
         self.assertEqual(['POST'],[x['method'] for x in f['writes']])
-        self.assertIn('cleanup_pending',result.stdout)
-        state=json.loads(next((self.dir/'states').glob('carplay-*.json')).read_text())
-        self.assertNotEqual('cleaned',state['phase'])
-        self.run_monitor(['--apply'],expected=1)
+        self.assertIn('carplay_post_ignored',result.stdout)
+        self.assertNotIn('cleanup_pending',result.stdout)
+        self.assertEqual([],list((self.dir/'states').glob('carplay-*.json')))
+        self.run_monitor(['--apply'])
         self.assertEqual(1,len(upstream.snapshot()['writes']))
+
+    def test_server_error_without_location_does_not_block_next_turn(self):
+        upstream.reset(no_location=True,post_error=True)
+        reset_nav(change_at=3)
+        result,f=self.run_monitor(['--apply'])
+        self.assertEqual(['POST','POST'],[x['method'] for x in f['writes']])
+        self.assertEqual(['15','14'],[x['body']['name'] for x in f['writes']])
+        self.assertIn('HTTP 500 on POST',result.stdout)
+        self.assertEqual(2,result.stdout.count('"event": "carplay_post_ignored"'))
+        self.assertEqual([],list((self.dir/'states').glob('carplay-*.json')))
+        self.assertNotIn('cleanup_pending',result.stdout)
+        # No shared-name DELETE even if the server allocated an unknown item.
+        self.assertEqual(3,len(f['queue']))
+
+    def test_post_timeout_is_ignored_without_pending_state(self):
+        upstream.reset(post_delay=0.3)
+        result,f=self.run_monitor(['--apply','--timeout','0.1'])
+        self.assertEqual(['POST'],[x['method'] for x in f['writes']])
+        self.assertIn('Transport error on POST',result.stdout)
+        self.assertIn('carplay_post_ignored',result.stdout)
+        self.assertNotIn('cleanup_pending',result.stdout)
+        self.assertEqual([],list((self.dir/'states').glob('carplay-*.json')))
+        self.assertGreaterEqual(NAV['polls'],5)
+        # Let the fixture's uncertain POST finish before the next test resets it.
+        time.sleep(0.3)
 
     def test_error_after_create_still_cleans_only_own_location(self):
         upstream.reset(post_error=True)
-        result,f=self.run_monitor(['--apply'],expected=1)
-        self.assertEqual(['POST','DELETE'],[x['method'] for x in f['writes']])
+        result,f=self.run_monitor(['--apply'])
+        methods=[x['method'] for x in f['writes']]
+        self.assertTrue(methods)
+        self.assertEqual(['POST','DELETE']*(len(methods)//2),methods)
         self.assertEqual(self.baseline,f['queue'])
+        self.assertIn('carplay_post_ignored',result.stdout)
+        for path in (self.dir/'states').glob('carplay-*.json'):
+            self.assertEqual('cleaned',json.loads(path.read_text())['phase'])
 
     def test_invalid_post_json_with_location_can_be_cleaned(self):
         upstream.reset(non_json_create=True)
-        result,f=self.run_monitor(['--apply'],expected=1)
+        result,f=self.run_monitor(['--apply'])
+        methods=[x['method'] for x in f['writes']]
+        self.assertTrue(methods)
+        self.assertEqual(['POST','DELETE']*(len(methods)//2),methods)
+        self.assertEqual(self.baseline,f['queue'])
+        self.assertIn('carplay_post_ignored',result.stdout)
+
+    def test_failed_post_cleanup_failure_is_also_ignored(self):
+        upstream.reset(post_error=True,delete_error=True)
+        result,f=self.run_monitor(['--apply'])
+        methods=[x['method'] for x in f['writes']]
+        self.assertEqual(['POST','DELETE'],methods)
+        self.assertIn('carplay_post_ignored',result.stdout)
+        self.assertIn('HTTP 500 on DELETE',result.stdout)
+        self.assertNotIn('cleanup_pending',result.stdout)
+        self.assertEqual([],list((self.dir/'states').glob('carplay-*.json')))
+
+    def test_successful_post_cleanup_failure_still_requires_recovery(self):
+        upstream.reset(delete_error=True)
+        result,f=self.run_monitor(['--apply'],expected=78)
+        self.assertIn('cleanup_pending',result.stdout)
+        state=json.loads(next((self.dir/'states').glob('carplay-*.json')).read_text())
+        self.assertEqual('posted',state['phase'])
+        self.assertTrue(state['queue_uri'])
+
+    def test_http_rejection_does_not_leave_state_or_exit(self):
+        upstream.reset(reject_post=True)
+        result,f=self.run_monitor(['--apply'])
+        self.assertEqual(self.baseline,f['queue'])
+        self.assertFalse(f['writes'])
+        posts=[r for r in f['requests'] if r['method']=='POST']
+        self.assertGreaterEqual(len(posts),2)
+        self.assertIn('carplay_post_ignored',result.stdout)
+        self.assertEqual([],list((self.dir/'states').glob('carplay-*.json')))
+
+    def test_old_post_without_location_is_discarded_on_start(self):
+        states=self.dir/'states';states.mkdir()
+        for phase in ('creating','posted','rejected'):
+            (states/('carplay-old-'+phase+'.json')).write_text(json.dumps({
+                'kind':'smartlight-short-request-v2','phase':phase,'queue_uri':None}))
+        result,f=self.run_monitor(['--apply','--iterations','1'])
+        self.assertEqual(3,result.stdout.count('previous_post_without_location'))
+        self.assertEqual([],list(states.glob('carplay-old-*.json')))
         self.assertEqual(['POST','DELETE'],[x['method'] for x in f['writes']])
         self.assertEqual(self.baseline,f['queue'])
+
+    def test_existing_receipt_still_requires_cleanup(self):
+        states=self.dir/'states';states.mkdir()
+        state_path=states/'carplay-pending.json'
+        state_path.write_text(json.dumps({'kind':'smartlight-short-request-v2',
+            'phase':'posted','queue_uri':self.origin+'/smartlight/queuedpurposes/own'}))
+        result,f=self.run_monitor(['--apply'],expected=78)
+        self.assertIn(str(state_path),result.stdout)
+        self.assertFalse(f['writes'])
+        self.assertTrue(state_path.exists())
+
+    def test_signal_during_failed_post_exits_without_pending_state(self):
+        upstream.reset(post_delay=0.3,no_location=True)
+        result,f=self.run_monitor(['--apply'],expected=130,interrupted=True)
+        self.assertEqual(['POST'],[x['method'] for x in f['writes']])
+        self.assertIn('carplay_post_ignored',result.stdout)
+        self.assertNotIn('cleanup_pending',result.stdout)
+        self.assertEqual([],list((self.dir/'states').glob('carplay-*.json')))
 
     def test_sigterm_cleans(self):
         result,f=self.run_monitor(['--apply','--hold','5','--iterations','0'],expected=130,interrupted=True)

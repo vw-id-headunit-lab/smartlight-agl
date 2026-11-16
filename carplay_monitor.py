@@ -30,6 +30,14 @@ class SnapshotChanged(Exception):
     pass
 
 
+class PendingRequest(Failure):
+    pass
+
+
+# An operator must resolve queue ownership before a supervisor can restart.
+RECOVERY_REQUIRED = 78
+
+
 def turn_direction(main_type, direction_type):
     """S2995 native HandleDirection semantics; unknown/straight returns None.
 
@@ -186,10 +194,22 @@ class PulseSink(object):
             try:
                 for name in os.listdir(self.state_dir):
                     if name.startswith('carplay-') and name.endswith('.json'):
-                        with codecs.open(os.path.join(self.state_dir, name), 'r', encoding='utf8') as source:
+                        path = os.path.join(self.state_dir, name)
+                        with codecs.open(path, 'r', encoding='utf8') as source:
                             state = json.load(source)
                         if state.get('phase') != 'cleaned':
-                            raise Failure('Pending request state exists; run rollback.sh --state first')
+                            # Apply the same ignore policy to an older failed
+                            # POST or an interrupted attempt without a receipt.
+                            if (state.get('kind') == 'smartlight-short-request-v2' and
+                                    state.get('phase') in ('creating', 'posted', 'rejected') and
+                                    not state.get('queue_uri')):
+                                os.unlink(path)
+                                light.emit('carplay_post_ignored',
+                                           reason='previous_post_without_location', state=path)
+                                continue
+                            raise PendingRequest('Pending request state exists: %s; '
+                                                 'run rollback.sh --state first' %
+                                                 path)
             except BaseException:
                 self.release_lock()
                 raise
@@ -257,20 +277,46 @@ class PulseSink(object):
             elif code in (400, 401, 403, 404, 405, 415, 422) and not location:
                 self.state['phase'] = 'rejected'
             light.write_state(self.path, self.state)
+        post_error = None
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 previous[sig] = signal.signal(sig, defer)
             self.client.request('POST', self.client.resource('queuedpurposes'),
                                 {'name': name, 'purpose': light.urlsplit(purpose_uri).path},
                                 response_hook=record_response)
+        except Failure as exc:
+            post_error = str(exc)
         finally:
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
+        if post_error is not None or not self.state['queue_uri']:
+            self._ignore_post_failure(post_error or 'POST did not return Location')
+            if pending:
+                raise light.Interrupted('Signal during bounded POST')
+            return False
         if pending:
             raise light.Interrupted('Signal during bounded POST')
-        if not self.state['queue_uri']:
-            raise Failure('POST did not return Location; retain state and stop')
         return True
+
+    def _ignore_post_failure(self, error):
+        direction = self.state['direction']
+        status = self.state.get('http_status')
+        cleanup_error = None
+        if self.state.get('queue_uri'):
+            # A failure response may still identify an allocated request.
+            # Attempt to revoke only that URI before forgetting the failure.
+            try:
+                self.stop()
+            except (Failure, ValueError, IOError, OSError) as exc:
+                cleanup_error = str(exc)
+        if self.path is not None:
+            # Forget failed attempts, including uncertain timeouts or failed
+            # best-effort cleanup. Never infer a DELETE target from a name.
+            os.unlink(self.path)
+            self.state = None
+            self.path = None
+        light.emit('carplay_post_ignored', direction=direction,
+                   error=error, http_status=status, cleanup_error=cleanup_error)
 
     def stop(self):
         if self.state is None:
@@ -361,13 +407,14 @@ class Controller(object):
             if now - self.started <= self.max_duration:
                 self.fired = False
         if not self.fired:
-            # Mark before mutation: a failed/unknown POST must not be retried.
+            # One POST per pulse attempt; a failure waits for the next cadence.
             self.fired = True
             self.direction = direction
             if self.started is None:
                 self.started = now
-            if self.sink.start(direction):
-                self.until = self.clock() + self.hold
+            self.sink.start(direction)
+            # Also pace failed/skipped attempts; do not hammer POST every poll.
+            self.until = self.clock() + self.hold
 
     def close(self):
         self.sink.stop()
@@ -522,6 +569,9 @@ def main(argv=None):
                 time.sleep(pause)
     except (light.Interrupted, KeyboardInterrupt):
         status = 130
+    except PendingRequest as exc:
+        light.emit('error', error=str(exc))
+        status = RECOVERY_REQUIRED
     except (Failure, ValueError, KeyError, TypeError, IOError, OSError) as exc:
         light.emit('error', error=str(exc))
         status = 1
@@ -531,7 +581,7 @@ def main(argv=None):
                 controller.close()
             except (Failure, ValueError, IOError, OSError) as exc:
                 light.emit('cleanup_pending', state=sink.path, error=str(exc))
-                status = 1
+                status = RECOVERY_REQUIRED
         if sink:
             try:
                 sink.release_lock()

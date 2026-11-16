@@ -55,11 +55,20 @@ baseline queue, checks available name/purpose metadata, and deletes that exact
 URI. It verifies absence afterwards. An item that already ended can return
 404/410. Other items, including another client's same-name request, remain.
 
-Without a trustworthy saved Location after an uncertain POST, cleanup retains
+For manual triggers, without a trustworthy saved Location after an uncertain POST, cleanup retains
 state and fails rather than attributing shared-name items to this run.
 `--confirm-absent` does not override the v2 identity requirement. Explicit
 validation rejections without Location are recorded as rejected and need no
-queue mutation. POST is never automatically retried.
+queue mutation. The HTTP client never retries POST.
+
+The CarPlay monitor logs and ignores failed POST attempts so polling continues.
+It removes local intent without a usable Location, including an uncertain
+timeout; older such state files are discarded at startup too. A saved Location
+is cleaned by exact URI on a best-effort basis before continuing; cleanup errors
+for a failed POST are logged and its intent is discarded too. Failed/skipped attempts wait the
+normal hold interval before another pulse is considered against fresh navigation
+and queue data. Discarding intent does not establish that the server rejected
+the request. Cleanup failures after successful POSTs retain state and exit 78.
 
 Legacy v1 states remain supported with their original unique random name,
 purpose URI, and baseline queue boundary. Legacy ambiguity confirmation applies

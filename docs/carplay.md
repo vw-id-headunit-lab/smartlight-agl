@@ -102,8 +102,17 @@ HandleDirection 分支，映射到**方向语义**后再实时查找用途，不
 
 复用上游已验证的请求形状：真实 purpose `name`，相对 `purpose` 路径，
 以及服务分配的 `Location`。POST 前落盘意图，收到 Location 后立即保存，
-撤销只针对该 URI。既有同名请求保持不动；清理失败或 POST 结果不明时停止，
-保留状态，不自动重试 POST，也不按公共名称批量删除。
+撤销只针对该 URI。既有同名请求保持不动。
+
+CarPlay 监控忽略 POST 失败：HTTP 错误、超时、无效响应或缺少 Location 时，
+记录 `carplay_post_ignored` 并继续监控。没有可用 Location 就删除本次本地意图，
+不留下待处理状态；已有 Location 则先尝试按该 URI 清理，清理失败也只记日志并
+忽略本次 POST。下一次尝试仍按 `--hold`
+间隔，并重新检查导航和队列，不在 HTTP 层重试 POST，也不按公共名称删除。
+超时的请求可能已被服务端接受，忽略失败不等于确认未入队。
+
+旧版本遗留的无 Location 状态在启动时同样忽略。成功 POST 的清理失败仍
+保留状态并返回 78；`rollback.sh` 和原手动触发工具继续使用原有恢复规则。
 
 正常退出用 Ctrl-C，或给监控进程发 SIGTERM；程序会清理当前请求。异常退出后，
 使用 `state_saved` / `cleanup_pending` 日志中的实际文件：
@@ -112,7 +121,7 @@ HandleDirection 分支，映射到**方向语义**后再实时查找用途，不
 sh rollback.sh --state /tmp/carplay-light-session/carplay-实际随机值.json
 ```
 
-有未完成状态的目录会拒绝新的 `--apply` 启动，避免遗留项累积。
+有明确 Location 的未完成状态会拒绝新的 `--apply` 启动。
 默认状态目录是 `/tmp/smartlight-carplay`（优先使用 TMPDIR），`--apply` 对目录
 持有原子 `carplay-monitor.lock` 锁，防止同一状态目录重复启动。SIGKILL/断电
 遗留锁时，先确认进程已结束并执行所有未完成状态的 rollback，再用
