@@ -33,7 +33,8 @@ def reset_nav(**kwargs):
                     'invalid_ref':False, 'delay_at':None, 'delay':0,
                     'omit_field':None, 'credential':None, 'requests':[],
                     'id':'current', 'technology':'appleCarPlay',
-                    'context_reads':0, 'stop_on_recheck':False})
+                    'context_reads':0, 'stop_on_recheck':False,
+                    'maneuver_reads':0, 'churn_after':None})
         NAV.update(kwargs)
 
 class Handler(upstream.Handler):
@@ -54,6 +55,11 @@ class Handler(upstream.Handler):
                 if self.path.endswith('/drivingContexts/'):
                     NAV['polls']+=1
                     f['polls']=NAV['polls']
+                elif '/maneuvers/' in self.path:
+                    # CarPlay 会给同一个转弯换新 element id（方向/距离不变）
+                    NAV['maneuver_reads']+=1
+                    if f['churn_after'] and NAV['maneuver_reads']>=f['churn_after']:
+                        f['id']='churned'
                 elif '/drivingContexts/' in self.path:
                     NAV['context_reads']+=1
                     if f['stop_on_recheck'] and NAV['context_reads']>=2:
@@ -78,7 +84,8 @@ class Handler(upstream.Handler):
                 if f['omit_field']:row.pop(f['omit_field'],None)
                 self.send(200,[row]);return
             if '/maneuvers/' in self.path:
-                self.send(200,[{'id':f['id'],'uri':'/simplenavigation/maneuvers/'+f['id'],
+                element=self.path.rstrip('/').split('/')[-1]
+                self.send(200,[{'id':element,'uri':'/simplenavigation/maneuvers/'+element,
                                'mainType':f['main'],'directionType':f['direction'],
                                'stage':f['stage'],'distance':50,'distanceUnit':'m'}]);return
             self.send(404);return
@@ -259,6 +266,15 @@ class Integration(unittest.TestCase):
         result,f=self.run_monitor(['--apply'])
         self.assertEqual(['POST','DELETE'],[x['method'] for x in f['writes']])
         self.assertEqual(self.baseline,f['queue'])
+
+    def test_maneuver_id_churn_still_signals_the_same_turn(self):
+        # CarPlay 行车中会刷新机动元素；同一个转弯换了 id 不应被 preflight 拒掉。
+        reset_nav(stage='follow', churn_after=2)
+        result,f=self.run_monitor(['--apply','--iterations','4'])
+        self.assertTrue(f['writes'], 'same-direction churn must still signal')
+        self.assertEqual('15', f['writes'][0]['body']['name'])
+        self.assertEqual(self.baseline,f['queue'])
+        self.assertNotIn('navigation_changed_during_preflight',result.stdout)
 
     def test_stop_between_preflight_and_post_does_not_mutate(self):
         reset_nav(stop_on_recheck=True)

@@ -126,21 +126,39 @@ class NavigationSource(object):
                 'directionType': maneuver.get('directionType'),
                 'distance': maneuver.get('distance')}
 
-    def still_current(self, key):
-        """Revalidate after light preflight, before any queue mutation."""
+    def still_current(self, key, direction=None):
+        """Revalidate after light preflight, before any queue mutation.
+
+        CarPlay refreshes the maneuver element while driving: the same turn
+        comes back under a new id and a different raw directionType. Comparing
+        element identity would therefore reject almost every real turn, so the
+        revalidation checks the turn we are about to signal instead - same
+        context, still guiding, same derived direction, still imminent.
+        """
         contexts = light.items(self.client.request('GET', key[0])[1])
         if len(contexts) != 1:
             return False
         row = contexts[0]
         if (row.get('technology') != 'appleCarPlay' or
-                row.get('isRouteGuidanceActive') is not True or
-                reference_uri(self.client, row.get('nextManeuver'), 'maneuvers') != key[1]):
+                row.get('isRouteGuidanceActive') is not True):
             return False
-        rows = light.items(self.client.request('GET', key[1])[1])
-        return (len(rows) == 1 and rows[0].get('id') == key[2] and
-                rows[0].get('stage') in ('execute', 'follow') and
-                rows[0].get('mainType') == key[3] and
-                rows[0].get('directionType') == key[4])
+        current_uri = reference_uri(self.client, row.get('nextManeuver'), 'maneuvers')
+        if current_uri is None:
+            return False
+        rows = light.items(self.client.request('GET', current_uri)[1])
+        if len(rows) != 1:
+            return False
+        current = rows[0]
+        if direction is not None:
+            if turn_direction(current.get('mainType'), current.get('directionType')) != direction:
+                return False
+        stage = current.get('stage')
+        if stage == 'execute':
+            return True
+        if stage == 'follow':
+            dist = current.get('distance')
+            return isinstance(dist, (int, float)) and dist <= 150
+        return False
 
 
 class PulseSink(object):
@@ -276,6 +294,7 @@ class Controller(object):
         self.clock = clock or getattr(time, 'monotonic', time.time)
         self.key, self.started, self.until = None, None, None
         self.fired = False
+        self.direction = None
         self.last_time = None
         self.retired = set()
         self.retired_limit = 4096
@@ -344,6 +363,7 @@ class Controller(object):
         if not self.fired:
             # Mark before mutation: a failed/unknown POST must not be retried.
             self.fired = True
+            self.direction = direction
             if self.started is None:
                 self.started = now
             if self.sink.start(direction):
@@ -448,7 +468,7 @@ def main(argv=None):
         sink = PulseSink(lamps, state_dir, args.apply)
         controller = Controller(sink, args.hold, args.max_duration)
         source = NavigationSource(nav)
-        sink.before_post = lambda: source.still_current(controller.key)
+        sink.before_post = lambda: source.still_current(controller.key, controller.direction)
         light.emit('carplay_started', apply=args.apply, state_dir=state_dir,
                    input='simplenavigation_http_poll', physical_light_verified=False)
         count = 0

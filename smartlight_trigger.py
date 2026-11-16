@@ -163,12 +163,23 @@ class Client(object):
             headers['Content-Type'] = 'application/json'
         if self.auth:
             headers['Authorization'] = self.auth
-        try:
-            code, raw, location = curl_request(method, url, headers, data, self.timeout)
-        except (RuntimeError, IOError, OSError) as exc:
-            emit('transport_error', method=method)
+        # A read-only GET may be retried: a single timeout on a moving vehicle
+        # must not end a whole session. Mutations are never retried.
+        attempts = 3 if method == 'GET' else 1
+        last = None
+        for attempt in range(attempts):
+            try:
+                code, raw, location = curl_request(method, url, headers, data, self.timeout)
+                last = None
+                break
+            except (RuntimeError, IOError, OSError) as exc:
+                last = exc
+                emit('transport_error', method=method, attempt=attempt + 1)
+                if attempt + 1 < attempts:
+                    time.sleep(0.2)
+        if last is not None:
             raise Failure('Transport error on %s (%s); no automatic mutation retry' %
-                          (method, str(exc)))
+                          (method, str(last)))
         emit('http', method=method, status=code)
         if response_hook:
             response_hook(code, location)
