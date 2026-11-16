@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a runtime-only archive from an explicit list of public files."""
+"""Legacy Python package. New Go runtime: go run ./cmd/build-release."""
 import argparse
 import gzip
 import hashlib

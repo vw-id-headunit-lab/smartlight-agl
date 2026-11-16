@@ -9,32 +9,33 @@ permissions:
   contents: read
 
 jobs:
-  mock-tests:
+  go-runtime:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.10', '3.12', '3.14']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Check launchers
+          go-version: '1.26.x'
+      - name: Format and launchers
         run: |
+          test -z "$(gofmt -l cmd internal)"
           sh -n trigger_light.sh
-          sh -n rollback.sh
           sh -n carplay_light.sh
-      - name: Run loopback regression tests and check vendored hashes
-        run: python tests/test_trigger.py
-      - name: CarPlay source and queue lifecycle tests
-        run: python tests/test_carplay.py
-      - name: Build runtime archive
-        run: python tools/build_release.py
-      - name: Keep test reports
+          sh -n rollback.sh
+      - name: Tests and vet
+        run: |
+          mkdir -p artifacts
+          go test -count=1 -json ./... | tee artifacts/go-tests.json
+          go test -race ./...
+          go vet ./...
+      - name: Static ARM64 package
+        run: go run ./cmd/build-release
+      - name: Keep reports/package
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mock-report-python-${{ matrix.python-version }}
-          path: artifacts/
+          name: smartlight-agl-go
+          path: |
+            artifacts/
+            dist/
           if-no-files-found: ignore

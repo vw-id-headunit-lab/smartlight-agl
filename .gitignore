@@ -7,6 +7,8 @@ venv/
 # Generated test reports, packages and local deployment records
 /artifacts/
 /dist/
+/smartlight-agl
+/smartlight-agl.exe
 /evidence/
 /backup*/
 /verification.json

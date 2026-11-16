@@ -1,78 +1,30 @@
-# Design
+# Go design
 
-## Runtime boundaries
+cmd/smartlight-agl: signal-aware CLI. internal/smartlight/client.go: stdlib HTTP,
+URI/origin/prefix/page bounds, registry and GET-only retries. state.go: real
+purpose/preflight, exclusive v1/v2 state, Location first, exact rollback.
+navigation.go: source snapshot/semantic revalidation, strict units, bounded turn
+window and lock. app.go: separate credentials and lifecycle contexts.
 
-`trigger_light.sh` selects Python 2.7 when installed, otherwise Python 3.
-`smartlight_trigger.py` implements exact command parsing, URI checks, paginated
-reads, selection, preflight, state transitions, and cleanup. `agl_runtime.py`
-implements private temporary files, random identifiers, and curl execution
-without a shell. `rollback.sh` delegates to the same cleanup implementation.
+POST body is real purpose name+relative validated path. State0600 intent precedes
+mutation; Location validated/synced before JSON. Malformed/HTTP500 replies still
+preserve cleanup identity. Unknown v2 identity remains pending; no shared-name
+deletion or mutation retry. Legacy unique-name v1 keeps baseline/metadata limits.
 
-Minimal Python 2.7 images may lack `io`, `json`, `urlparse`, `urllib2`, `socket`,
-`ssl`, `subprocess`, `uuid`, and `tempfile`. The client uses `codecs`,
-`os.urandom`, and application-owned temporary directories. Unmodified CPython
-2.7.18 JSON and URL parser sources supply missing pure-Python modules.
-ASCII/percent-encoded service URIs avoid a dependency on `unicodedata`.
+Cleanup checks saved service/prefix/purpose/non-overlap/available metadata,
+DELETEs exact URI then confirms absence. 404/410 may mean completed one-shot.
+Signals cannot skip bounded POST persistence or independent cleanup context;
+SIGKILL, power loss and unknown server completion remain explicit limits.
 
-curl is invoked with an argument vector and bounded connection/request timeouts.
-Its default configuration, proxy variables, redirects, and retries are disabled.
-TLS verification remains enabled. Authorization values are written into a mode
-600 config file within a mode 700 temporary directory and are removed afterwards.
+HTTP: no environment proxy/redirect/insecureTLS mode, body2MiB/header64KiB,
+GET transport at most3 attempts, no status or mutation retry. Registry/light/nav
+auth never inherit. Page links stay same-origin/resource, max100 and cycle check.
 
-## Purpose selection and POST contract
+Controller follows continuous semantic context+derived direction, not mutable
+element id. Latest-main repeat+near-follow policy stays, with intentional unit/
+invalid-value/non-resetting-window corrections. Poll deadline follows pulse
+expiry; DELETE precedes new POST. Same-direction turns with no observable boundary
+share the window rather than inventing turn identity. Network affects timing.
 
-`--direction` matches live metadata exactly: `navigation`, `direction`, and the
-selected `left`/`right` value. Names and resource UUIDs are discovered. Name/id/URI
-selectors remain available for other effects. Every selector must match exactly
-one element.
-
-The validated request body is:
-
-```json
-{
-  "name": "NAME_FROM_LIVE_PURPOSE",
-  "purpose": "/smartlight/purposes/UUID_FROM_LIVE_PURPOSE"
-}
-```
-
-The tested service rejects arbitrary random request names. The client uses the
-real purpose name and a validated relative purpose path. It checks configuration
-and the matching setting group without changing switches or brightness.
-
-## Request identity and state
-
-The purpose name is shared by other clients, so it is not a safe cleanup
-identity. New runs use `smartlight-short-request-v2` state and store the exact
-queue URI from the POST response's `Location` header.
-
-State is created exclusively before POST. Updates are written to a new file,
-flushed, and renamed over the previous state. Responses are recorded before
-interpreting JSON, including a response containing only `{"status":"ok"}`.
-A random local run id never becomes the service request name.
-
-Cleanup validates the URI's origin and resource, rejects overlap with the
-baseline queue, checks available name/purpose metadata, and deletes that exact
-URI. It verifies absence afterwards. An item that already ended can return
-404/410. Other items, including another client's same-name request, remain.
-
-Without a trustworthy saved Location after an uncertain POST, cleanup retains
-state and fails rather than attributing shared-name items to this run.
-`--confirm-absent` does not override the v2 identity requirement. Explicit
-validation rejections without Location are recorded as rejected and need no
-queue mutation. POST is never automatically retried.
-
-Legacy v1 states remain supported with their original unique random name,
-purpose URI, and baseline queue boundary. Legacy ambiguity confirmation applies
-only to that old identity model.
-
-## Interruptions and verification limits
-
-During POST, SIGINT/SIGTERM are deferred until the bounded request finishes and
-response identity is saved; then cleanup runs. During cleanup, further such
-signals are ignored. This cannot survive SIGKILL, power loss, an unreachable
-service, or a crash before response identity was saved.
-
-The hold duration is a client wait before DELETE, not a server TTL. Latency and
-playback scheduling affect visible timing. A player response can indicate which
-request is selected; it does not prove the physical light is visible or that a
-completed light effect is reversible.
+Python/vendor remain unchanged explicit legacy fallback. Go package needs neither.
+See go-migration.md for CLI/build/behavior differences.

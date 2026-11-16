@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Migrate default runtime to standard-library Go and static ARM64 packaging.
+- Preserve real-purpose request shape, Location ownership and v1/v2 recovery.
+- Normalize CarPlay distance units/reject invalid values and retain semantic max window across refreshed ids.
+- Document repeat/one-shot policy and separate registry credentials.
+
 - Add Python 2.7/3 CarPlay navigation monitoring through the existing
   `simplenavigation` HTTP service; default to read-only polling.
 - Reuse real-purpose selection, relative references, durable Location identity
