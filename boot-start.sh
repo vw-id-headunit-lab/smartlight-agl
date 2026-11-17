@@ -57,10 +57,14 @@ exec >> "$SMARTLIGHT_BOOT_LOG" 2>&1
 HOST='http://[fd53:7cb8:383:3::73]:49520'
 BASE="$HOST/smartlight/"
 REGISTRY='http://[::1]:80'
+# Confirmed from the local registry's case-sensitive DisplaySpeed service.
+# Use the returned collection, rather than an element UUID or the legacy tree.
+SPEED_URI='http://[fd53:7cb8:383:3::73]:29721/DisplaySpeed/speeds/'
 
 # Values below --interval 2 or --hold 3 may cause display flicker.
 # Adaptive follow is on by default; add --adaptive-follow=false to disable it.
-# If VIWI speed discovery fails, follow-distance falls back to 150 meters.
+# If speed reading fails, follow-distance falls back to 150 meters.
 exec /bin/sh "$SMARTLIGHT_BOOT_DIR/carplay_light.sh" \
     --base "$BASE" --nav-registry "$REGISTRY" \
+    --speed-uri "$SPEED_URI" \
     --apply --interval 2 --hold 3 --timeout 5 --state-dir /tmp/smartlight-carplay

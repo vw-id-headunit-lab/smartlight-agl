@@ -167,19 +167,29 @@ speed produces the same threshold regardless of road classification.
 The default read-only discovery entry is `http://[fd53:7cb8:383:3::99]:8080/`.
 It follows returned URIs under `Displayspeed` and selects `type=velocityPrimary` /
 `currentValue`, without guessing resource names or UUIDs. `--speed-unit auto`
-requires an explicit response `unit=km/h|mph|m/s`; missing units cause fallback.
-Endpoint reachability and real response formats still require vehicle checks.
+requires an explicit response `unit=km/h|mph|m/s`, and also accepts VIWI enums
+`kmPerHour` (km/h) and `milesPerHour` (mph). Missing or unknown units cause fallback.
+Configured and response units are compared after alias normalization; conflicting
+km/h and mph values are still rejected.
+
+A read-only vehicle check on 2026-11-17 found that the default entry times out.
+The local registry query `GET http://[::1]/?name=DisplaySpeed` returns
+`::73:29721/DisplaySpeed/`; its returned collection is `/DisplaySpeed/speeds/`,
+with unit `kmPerHour`. Registry names are case-sensitive: `name=Displayspeed`
+returns no match. `boot-start.sh` uses this vehicle's confirmed collection;
+query the registry and follow returned service URIs again for other vehicles.
 
 With a confirmed speed URI and unit, skip discovery and dry-run first:
 
 ```sh
-SPEED_URI='http://[fd53:7cb8:383:3::99]:8080/ACTUAL_RETURNED_SPEED_RESOURCE_URI'
+SPEED_URI='http://[fd53:7cb8:383:3::73]:29721/DisplaySpeed/speeds/'
 sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
-  --speed-uri "$SPEED_URI" --speed-unit km/h --iterations 10
+  --speed-uri "$SPEED_URI" --iterations 10
 ```
 
-The example `km/h` must match the confirmed `currentValue` unit; `mph` and `m/s`
-are also supported. Use `--speed-auth-file` for separate speed credentials; lighting
+Default `auto` works for this vehicle; explicit `--speed-unit km/h` also matches
+`kmPerHour`. `mph` and `m/s` are also supported and must match the confirmed unit.
+Use `--speed-auth-file` for separate speed credentials; lighting
 and navigation credentials are not inherited. `adaptive_follow` and `carplay_snapshot`
 logs expose `speed_available`, `speed_kph`, and `follow_distance_m`.
 

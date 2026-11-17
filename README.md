@@ -160,18 +160,26 @@ sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
 这是项目可调策略，不是原厂参数，也不识别道路类型；同样时速采用同样阈值。
 默认只读发现入口是 `http://[fd53:7cb8:383:3::99]:8080/`，沿服务返回的 URI
 查找 `Displayspeed` 下 `type=velocityPrimary` 的 `currentValue`，不猜测资源名/UUID。
-`--speed-unit auto` 只接受响应明确提供的 `unit=km/h|mph|m/s`；缺少单位则回退，
-经实车只读确认后可显式指定单位。入口可达性和真实响应格式仍需实车核对。
+`--speed-unit auto` 接受响应明确提供的 `unit=km/h|mph|m/s`，也识别 VIWI 枚举
+`kmPerHour`（km/h）和 `milesPerHour`（mph）；缺少或未知单位则回退。
+显式单位与响应按同义单位核对，仍拒绝 km/h 与 mph 冲突。
+
+2026-11-17 实车只读检查发现：上述默认入口连接超时，本机注册中心
+`GET http://[::1]/?name=DisplaySpeed` 返回 `::73:29721/DisplaySpeed/`，
+服务返回的车速集合为 `/DisplaySpeed/speeds/`，单位为 `kmPerHour`。
+注册中心名称区分大小写，`name=Displayspeed` 返回空列表。
+`boot-start.sh` 已配置该车确认的集合；其它车辆应重新读取注册中心和服务返回的 URI。
 
 已确认速度 URI 和单位时，推荐跳过发现，先只读预演：
 
 ```sh
-SPEED_URI='http://[fd53:7cb8:383:3::99]:8080/实际返回的速度资源URI'
+SPEED_URI='http://[fd53:7cb8:383:3::73]:29721/DisplaySpeed/speeds/'
 sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
-  --speed-uri "$SPEED_URI" --speed-unit km/h --iterations 10
+  --speed-uri "$SPEED_URI" --iterations 10
 ```
 
-示例 `km/h` 须与真实 `currentValue` 单位一致；也支持 `mph`、`m/s`。
+此车可使用默认 `auto`；显式指定 `--speed-unit km/h` 也与 `kmPerHour` 一致。
+也支持 `mph`、`m/s`，须与真实 `currentValue` 单位一致。
 速度凭据独立使用 `--speed-auth-file`，不继承灯效/导航凭据。日志 `adaptive_follow` 和
 `carplay_snapshot` 中的 `speed_available`、`speed_kph`、`follow_distance_m` 显示当前决策。
 

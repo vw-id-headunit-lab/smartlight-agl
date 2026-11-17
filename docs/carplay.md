@@ -61,8 +61,12 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 
 三侧凭据不继承、不入日志状态。prefix mapping用advertised-base/nav-advertised-base。
 车速为独立GET数据源，默认从`http://[fd53:7cb8:383:3::99]:8080/`发现Displayspeed；
-实际URI、速度单位和网络可达性仍需只读确认。可用`--speed-uri`指定确认后的集合/元素，
-`--speed-unit auto`要求返回unit，或显式传已确认的km/h、mph、m/s；独立凭据用speed-auth-file。
+可用`--speed-uri`指定确认后的集合/元素。2026-11-17实车只读确认默认入口连接超时，
+本机registry的`?name=DisplaySpeed`返回`http://[fd53:7cb8:383:3::73]:29721/DisplaySpeed/`，
+其返回的车速集合为`/DisplaySpeed/speeds/`，boot-start.sh已显式配置此集合。
+registry名称区分大小写，`Displayspeed`查不到此服务；其它车辆需重新查询实际URI。
+`--speed-unit auto`要求返回unit，支持km/h、mph、m/s及VIWI的kmPerHour、milesPerHour；
+也可显式传已确认的同义单位，仍拒绝km/h与mph冲突。独立凭据用speed-auth-file。
 失败/过期回退固定距离，阈值波动不会重置同转向窗口预算。完整参数见README双语教程。
 代理访问前缀只用于HTTP请求地址；POST的purpose引用使用服务端路径，状态及清理保留访问路径。
 Ctrl-C/SIGTERM停止来源读取；有界POST先存Location，独立cleanup context撤销本桥项。

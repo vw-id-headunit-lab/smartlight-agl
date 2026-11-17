@@ -10,6 +10,14 @@
   Multiple active contexts are ambiguous. No raw-iAP2 decoder is involved.
 - Follow: valid units and finite nonnegative number within meter threshold;
   0.2km=200m. follow-distance0 deliberately disables follow triggering.
+- Speed unavailable: navigation GET 200 does not prove a speed read succeeded.
+  A 2026-11-17 read-only vehicle check found the default ::99:8080 entry timed
+  out. Query the local registry with the exact name DisplaySpeed (case-sensitive),
+  then follow its returned collection URI and pass it through --speed-uri.
+  This vehicle returns ::73:29721/DisplaySpeed/speeds/ and unit kmPerHour.
+  Updated builds normalize kmPerHour/milesPerHour to km/h/mph; older builds
+  reject these response units even with --speed-unit km/h. The boot script
+  uses the confirmed collection. Other vehicles require their own URI check.
 - Window: repeat is bounded, one-shot opts out. ID refresh cannot reset maximum;
   far/inactive/noneligible/direction/context change ends continuous turn.
 - cleanup_pending: retain state, use cleanup with original service/prefix/auth.

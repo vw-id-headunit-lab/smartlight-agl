@@ -67,12 +67,23 @@ func NewDiscoveringSpeedSource(base, unit, auth string, timeout time.Duration, l
 	return s, nil
 }
 
+func normalizedSpeedUnit(unit string) string {
+	switch unit {
+	case "kmPerHour":
+		return "km/h"
+	case "milesPerHour":
+		return "mph"
+	default:
+		return unit
+	}
+}
+
 func SpeedKPH(value any, unit string) (float64, error) {
 	v, ok := number(value)
 	if !ok || v < 0 {
 		return 0, errors.New("speed requires a finite nonnegative JSON number")
 	}
-	switch unit {
+	switch normalizedSpeedUnit(unit) {
 	case "km/h":
 	case "mph":
 		v *= 1.609344
@@ -163,8 +174,11 @@ func (s *SpeedSource) parse(v any) (float64, error) {
 	if unit == "auto" {
 		unit = str(selected["unit"])
 	}
-	if actual, present := selected["unit"]; present && actual != unit {
-		return 0, errors.New("speed element unit differs from configured source unit")
+	if actual, present := selected["unit"]; present {
+		actualUnit, ok := actual.(string)
+		if !ok || normalizedSpeedUnit(actualUnit) != normalizedSpeedUnit(unit) {
+			return 0, errors.New("speed element unit differs from configured source unit")
+		}
 	}
 	return SpeedKPH(selected["currentValue"], unit)
 }

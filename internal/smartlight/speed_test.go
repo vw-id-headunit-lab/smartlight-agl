@@ -31,7 +31,8 @@ func TestSpeedUnitsAndInvalidValues(t *testing.T) {
 		value any
 		unit  string
 		want  float64
-	}{{json.Number("120"), "km/h", 120}, {10, "m/s", 36}, {60.0, "mph", 96.56064}, {0, "km/h", 0}} {
+	}{{json.Number("120"), "km/h", 120}, {10, "m/s", 36}, {60.0, "mph", 96.56064}, {0, "km/h", 0},
+		{json.Number("120"), "kmPerHour", 120}, {60.0, "milesPerHour", 96.56064}} {
 		got, err := SpeedKPH(tc.value, tc.unit)
 		if err != nil || math.Abs(got-tc.want) > 1e-6 {
 			t.Fatalf("%v %s = %v, %v; want %v", tc.value, tc.unit, got, err, tc.want)
@@ -57,6 +58,14 @@ func TestSpeedSourceParsing(t *testing.T) {
 		{"numeric-status-string", `{"status":"200","data":{"type":"velocityPrimary","currentValue":120,"unit":"km/h"}}`, "auto", 120, false},
 		{"collection", `{"data":[{"type":"velocitySecondary","currentValue":999},{"type":"velocityPrimary","currentValue":30}]}`, "km/h", 30, false},
 		{"zero", `{"type":"velocityPrimary","currentValue":0,"unit":"km/h"}`, "auto", 0, false},
+		{"viwi-kph-auto", `{"type":"velocityPrimary","currentValue":120,"unit":"kmPerHour"}`, "auto", 120, false},
+		{"viwi-kph-configured", `{"type":"velocityPrimary","currentValue":120,"unit":"kmPerHour"}`, "km/h", 120, false},
+		{"viwi-kph-configured-alias", `{"type":"velocityPrimary","currentValue":120,"unit":"km/h"}`, "kmPerHour", 120, false},
+		{"viwi-mph-auto", `{"type":"velocityPrimary","currentValue":60,"unit":"milesPerHour"}`, "auto", 96.56064, false},
+		{"viwi-mph-configured", `{"type":"velocityPrimary","currentValue":60,"unit":"milesPerHour"}`, "mph", 96.56064, false},
+		{"viwi-unit-conflict", `{"type":"velocityPrimary","currentValue":30,"unit":"milesPerHour"}`, "km/h", 0, true},
+		{"unknown-unit", `{"type":"velocityPrimary","currentValue":30,"unit":"knots"}`, "auto", 0, true},
+		{"malformed-unit", `{"type":"velocityPrimary","currentValue":30,"unit":true}`, "km/h", 0, true},
 		{"missing", `{"type":"velocityPrimary","unit":"km/h"}`, "auto", 0, true},
 		{"missing-unit", `{"type":"velocityPrimary","currentValue":30}`, "auto", 0, true},
 		{"unit-conflict", `{"type":"velocityPrimary","currentValue":30,"unit":"mph"}`, "km/h", 0, true},
@@ -349,6 +358,8 @@ func TestAdaptiveCarPlayCLIHighSpeedLowSpeedAndFallback(t *testing.T) {
 		name, body string
 		wantPost   bool
 	}{{"high-speed", `{"data":{"type":"velocityPrimary","currentValue":120,"unit":"km/h"}}`, true},
+		{"viwi-high-speed", `{"status":"ok","data":[{"type":"velocityPrimary","currentValue":120,"unit":"kmPerHour"},{"type":"velocityPrimaryHiRes","currentValue":120,"unit":"kmPerHour"},{"type":"velocitySecondary","currentValue":75,"unit":"milesPerHour"}]}`, true},
+		{"viwi-stationary", `{"status":"ok","data":[{"type":"velocityPrimary","currentValue":0,"unit":"kmPerHour"}]}`, false},
 		{"low-speed", `{"data":{"type":"velocityPrimary","currentValue":30,"unit":"km/h"}}`, false},
 		{"missing-unit-fallback", `{"data":{"type":"velocityPrimary","currentValue":120}}`, false},
 		{"invalid-fallback", `{"data":{"type":"velocityPrimary","currentValue":-1,"unit":"km/h"}}`, false}} {
@@ -375,6 +386,12 @@ func TestAdaptiveCarPlayCLIHighSpeedLowSpeedAndFallback(t *testing.T) {
 			}
 			if f.snapshot().count != want || reads.Load() != 1 || !strings.Contains(out.String(), "follow_distance_m") {
 				t.Fatalf("posts=%d speed reads=%d log=%s", f.snapshot().count, reads.Load(), &out)
+			}
+			if strings.HasPrefix(tc.name, "viwi-") && !strings.Contains(out.String(), `"speed_available":true`) {
+				t.Fatalf("VIWI response unexpectedly fell back: %s", &out)
+			}
+			if tc.name == "viwi-stationary" && !strings.Contains(out.String(), `"follow_distance_m":50`) {
+				t.Fatalf("zero speed did not use the minimum threshold: %s", &out)
 			}
 			f.assertBaseline(t)
 		})
