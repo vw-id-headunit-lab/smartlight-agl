@@ -235,9 +235,14 @@ sh boot-start.sh
 ```
 
 它写入 `/run/systemd/system/smartlight-carplay.service`，使用脚本内的 HOST 与
-本机注册中心，日志在部署目录的 `carplay-light.log`。普通失败 5 秒后重启，
+本机注册中心，日志为 `/tmp/carplay-light.log`（启动时超过 256 KiB 会轮换到 `.1`）。普通失败 5 秒后重启，
 退出 78 时停止自动重启。它不会自动修改现有 boot hook；`/run` 中的服务文件也不跨重启持久保存。
 有鉴权或自定义地址时先核对启动脚本参数，不要直接套用无凭据的启动配置。
+
+`/tmp` 日志可能随重启丢失；部署目录中的旧日志不会自动搬移或删除。
+取速请求日志带 `source=speed`。`transport_error.error_kind` 区分 `timeout`、
+`connection_refused`、`network_unreachable`、`dns_error` 等；`speed_read_timeout`
+表示本轮取速总预算耗尽。导航 GET 的 200 不代表车速读取成功。
 
 ```sh
 systemctl status smartlight-carplay.service

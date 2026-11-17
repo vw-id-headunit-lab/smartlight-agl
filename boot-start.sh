@@ -43,7 +43,12 @@ esac
 
 umask 077
 cd "$SMARTLIGHT_BOOT_DIR"
-SMARTLIGHT_BOOT_LOG="$SMARTLIGHT_BOOT_DIR/carplay-light.log"
+SMARTLIGHT_BOOT_LOG=/tmp/carplay-light.log
+# The service runs as root; do not follow pre-existing symlinks in shared /tmp.
+if [ -L "$SMARTLIGHT_BOOT_LOG" ] || [ -L "$SMARTLIGHT_BOOT_LOG.1" ]; then
+    echo 'Refusing symlink at CarPlay log path.' >&2
+    exit 1
+fi
 if [ -f "$SMARTLIGHT_BOOT_LOG" ] && [ "$(wc -c < "$SMARTLIGHT_BOOT_LOG")" -ge 262144 ]; then
     mv -f "$SMARTLIGHT_BOOT_LOG" "$SMARTLIGHT_BOOT_LOG.1"
 fi

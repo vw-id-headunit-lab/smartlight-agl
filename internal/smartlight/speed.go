@@ -37,7 +37,16 @@ func NewSpeedSource(uri, unit, auth string, timeout time.Duration, log Logger) (
 	}
 	base := *u
 	base.Path, base.RawPath = "/", ""
-	c, err := NewClient(base.String(), "", auth, timeout, log)
+	speedLog := func(event string, fields Object) {
+		if log != nil {
+			copy := Object{"source": "speed"}
+			for key, value := range fields {
+				copy[key] = value
+			}
+			log(event, copy)
+		}
+	}
+	c, err := NewClient(base.String(), "", auth, timeout, speedLog)
 	if err != nil {
 		return nil, err
 	}
@@ -314,6 +323,9 @@ func (a *AdaptiveFollow) Refresh(ctx context.Context) error {
 		if err != nil {
 			// Do not expose URI, response body, or credentials in fallback logs.
 			fields["reason"] = "read_failed_or_invalid"
+			if errors.Is(err, context.DeadlineExceeded) {
+				fields["reason"] = "speed_read_timeout"
+			}
 		}
 		a.Log("adaptive_follow", fields)
 	}

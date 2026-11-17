@@ -101,7 +101,9 @@ sh boot-start.sh
 
 脚本使用当前文档HOST和本机registry，自动加`--apply`，写入
 `/run/systemd/system/smartlight-carplay.service`并调用systemctl启动；普通失败5秒后重启，
-恢复错误78停止重启，`TimeoutStopSec=45s`。启动日志为同目录`carplay-light.log`。
+恢复错误78停止重启，`TimeoutStopSec=45s`。启动日志为`/tmp/carplay-light.log`，
+启动时达到256 KiB轮换到`/tmp/carplay-light.log.1`；旧部署目录日志不自动搬移，重启可能清空/tmp。
+速度HTTP日志带`source=speed`，传输失败用`error_kind`区分超时/拒绝连接/无路由等。
 不需要开机联动时不要调用该脚本；停用用`systemctl stop smartlight-carplay.service`，
 然后按状态清理。此轮只做shell语法/打包检查，未操作实机systemd或boot hook。
 

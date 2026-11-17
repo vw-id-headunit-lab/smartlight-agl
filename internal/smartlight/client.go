@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -20,6 +22,32 @@ type Object map[string]any
 type Logger func(string, Object)
 
 func silent(string, Object) {}
+
+// Classify without logging raw net/url errors, which may contain credentials,
+// query strings, or response details. Preserve a useful distinction for diagnosis.
+func transportErrorKind(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	var timeout net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()) {
+		return "timeout"
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return "connection_refused"
+	}
+	if errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
+		return "network_unreachable"
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return "dns_error"
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "connection_closed"
+	}
+	return "transport_failure"
+}
 
 type Client struct {
 	Base, Advertised *url.URL
@@ -284,7 +312,7 @@ func (c *Client) Request(ctx context.Context, method, target string, body any, m
 		if err == nil {
 			break
 		}
-		c.Log("transport_error", Object{"method": method, "attempt": attempt + 1})
+		c.Log("transport_error", Object{"method": method, "attempt": attempt + 1, "error_kind": transportErrorKind(err)})
 		if method != http.MethodGet || attempt == attempts-1 || ctx.Err() != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()

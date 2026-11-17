@@ -245,10 +245,16 @@ sh boot-start.sh
 ```
 
 It writes `/run/systemd/system/smartlight-carplay.service`, uses the HOST and registry configured
-in the script, and logs to `carplay-light.log` in the deployment directory. Ordinary failures restart
+in the script, and logs to `/tmp/carplay-light.log` (rotated to `.1` at startup above 256 KiB). Ordinary failures restart
 after five seconds; exit 78 suppresses restarts. It does not modify the existing boot hook, and the
 unit under `/run` does not survive a reboot. For credentials or custom endpoints, adjust the script
 arguments before using its credential-free default configuration.
+
+Logs under `/tmp` may disappear on reboot. Existing deployment-directory logs
+are not moved or deleted. Speed HTTP logs include `source=speed`;
+`transport_error.error_kind` distinguishes timeout, connection refusal, unreachable
+network, DNS failure, and other transport failures. `speed_read_timeout` means the
+total speed-read budget expired. A navigation GET 200 is not proof of a speed read.
 
 ```sh
 systemctl status smartlight-carplay.service
