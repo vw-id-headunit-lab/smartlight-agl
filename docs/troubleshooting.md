@@ -1,55 +1,33 @@
-# 排错与恢复
+# Go troubleshooting
 
-## `ImportError: No module named io/json/urlparse`
+- Missing/incorrect binary: build Linux ARM64 static package on developer host;
+  keep binary and wrappers together. Cross-build is not target execution.
+- HTTP307: registry != service. Use nav-registry GET /?name=simplenavigation or
+  exact nav-base; mandatory one of them, not both.
+- Auth: separate auth-file/nav-auth-file/nav-registry-auth-file; no inheritance
+  into returned service, no state/log credentials. Use existing service access.
+- Source: active current appleCarPlay required; Android local nav is not CarPlay.
+  Multiple active contexts are ambiguous. No raw-iAP2 decoder is involved.
+- Follow: valid units and finite nonnegative number within meter threshold;
+  0.2km=200m. follow-distance0 deliberately disables follow triggering.
+- Window: repeat is bounded, one-shot opts out. ID refresh cannot reset maximum;
+  far/inactive/noneligible/direction/context change ends continuous turn.
+- cleanup_pending: retain state, use cleanup with original service/prefix/auth.
+  No Location after uncertain POST means no name-based delete, no POST retry.
+- carplay_post_ignored: the monitor skipped one failed pulse and continues at
+  normal hold cadence after exact cleanup or no-Location evidence archival.
+  ignored-post-*.json retains an uncertain receipt; it is not proof of absence.
+- Exit78: known cleanup ownership remains pending. The optional boot service
+  deliberately stops restart loops until its state is recovered.
+- Stale lock: verify stopped process, clean unfinished states, then manually
+  remove empty carplay-monitor.lock. No second-directory workaround.
+- Hold is client timing, not serverTTL. Power loss/SIGKILL/failed network needs
+  independent recovery. Local player state is not proof of visible light.
 
-请部署完整运行目录，包括 `agl_runtime.py` 和 `vendor/`。本项目用 codecs、随附 CPython 模块和 curl 兼容精简 Python 2.7。不要只复制主脚本。
+For the independent manual Python tool, use python-trigger/trigger_light.sh and
+python-trigger/rollback.sh; root launchers are Go-only. State recovery remains
+compatible across tools. See go-migration.md and ../python-trigger/README.md.
 
-## TLS `wrong version number` 或 404
-
-检查实际服务的协议和路径。已验证固件在该端口提供 HTTP，前缀为 `/smartlight/`。不要在 shell 字符串的冒号前保留反斜杠。AGL 与 QNX 的回环地址属于不同系统，应使用现有可达地址。
-
-## POST 返回 `400 invalid request`
-
-使用实时列表中的真实名称及相对用途 URI。本项目已自动处理；旧版把随机运行标识当成请求名称，会被已验证服务拒绝。日志包含状态和错误信息，脚本不重试 POST。
-
-## 匹配失败或功能组关闭
-
-先执行 `list` 检查固件实际元数据。方向参数只匹配导航转向，不回退到变道。匹配不到或不唯一时停止。功能组关闭时先在 HMI 打开对应功能；脚本不会修改开关或亮度。
-
-## 状态文件已存在
-
-不要覆盖上次状态。按需清理：
-
-```sh
-sh rollback.sh --state /tmp/实际状态文件.json
-```
-
-重复触发时省略 `--state`，自动生成新文件名。已清理文件确认后可自行归档。
-
-## `cleanup_pending` 或缺少 Location
-
-保留日志和状态，恢复连通后重跑 `rollback.sh --state ...`。有已保存的 `queue_uri` 时只处理这个 URI。
-
-手动触发和 rollback 在 POST 结果不明且没有 Location 时停止，不能仅凭公共用途
-名称判断本次创建了哪项。结合服务端记录人工确认；不要批量清队列。
-`--confirm-absent` 只兼容旧 v1 的独有随机名称状态，不能解除新 v2 的身份要求。
-
-CarPlay 监控按连续运行策略忽略 POST 失败并记录 `carplay_post_ignored`：
-没有 Location 时删除本次本地状态，继续轮询；有 Location 时先尝试清理该 URI，
-清理失败也记入日志并忽略本次 POST，不留下待处理状态。
-旧版本遗留的无 Location 状态也在启动时忽略。下一次灯效仍按 `--hold` 间隔
-重新检查导航和队列，不在 HTTP 层重试 POST。超时可能发生在服务端接受之后，
-忽略失败不代表确认未入队，也不触发按名称清队列。
-
-CarPlay 监控遇到有 Location 的未完成状态或清理失败时返回退出码 78。systemd 启动器应配置
-`RestartPreventExitStatus=78`，避免每隔几秒重启却始终被同一状态挡住。
-普通网络启动故障仍可重启。HTTP 500 表示服务端处理失败，
-`curl exit 28` 表示超过请求时限，两者都不能仅凭错误码推断请求没有入队。
-
-## 接口成功但没有亮灯
-
-HTTP 成功、请求入队、播放器选中与实体灯带播放是不同观察结果。用户设置、高优先级请求、控制器状态及电影资源包会影响效果。`physical_light_verified=false` 表示客户端无法证明实体播放。
-
-## 恢复软件版本
-
-更新前保存完整旧目录。回退时停止正在触发的进程，先按状态清理，再恢复成套运行文件。`rollback.sh` 撤销灯效请求，不恢复软件版本。
+boot-start.sh writes/starts a runtime systemd unit with --apply; it is opt-in,
+not a probe. Do not run it merely to check installation. See carplay.md for
+the exact service name, log path, stop command and recovery boundaries.

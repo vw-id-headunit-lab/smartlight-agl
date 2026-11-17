@@ -1,87 +1,51 @@
-# Design
+# Go design
 
-## Runtime boundaries
+cmd/smartlight-agl: signal-aware CLI. internal/smartlight/client.go: stdlib HTTP,
+URI/origin/prefix/page bounds, registry and GET-only retries. state.go: real
+purpose/preflight, exclusive v1/v2 state, Location first, exact rollback.
+navigation.go: source snapshot/semantic revalidation, strict units, bounded turn
+window and lock. app.go: separate credentials and lifecycle contexts.
 
-`trigger_light.sh` selects Python 2.7 when installed, otherwise Python 3.
-`smartlight_trigger.py` implements exact command parsing, URI checks, paginated
-reads, selection, preflight, state transitions, and cleanup. `agl_runtime.py`
-implements private temporary files, random identifiers, and curl execution
-without a shell. `rollback.sh` delegates to the same cleanup implementation.
+POST body is real purpose name+validated service-side path. Explicit proxy prefix
+mapping changes transport URLs, not the upstream purpose reference in JSON;
+state and cleanup retain the mapped transport identity. State0600 intent precedes
+mutation; Location validated/synced before JSON. Malformed/HTTP500 replies still
+preserve cleanup identity. Unknown v2 identity remains pending; no shared-name
+deletion or mutation retry. Legacy unique-name v1 keeps baseline/metadata limits.
 
-Minimal Python 2.7 images may lack `io`, `json`, `urlparse`, `urllib2`, `socket`,
-`ssl`, `subprocess`, `uuid`, and `tempfile`. The client uses `codecs`,
-`os.urandom`, and application-owned temporary directories. Unmodified CPython
-2.7.18 JSON and URL parser sources supply missing pure-Python modules.
-ASCII/percent-encoded service URIs avoid a dependency on `unicodedata`.
+Cleanup checks saved service/prefix/purpose/non-overlap/available metadata,
+DELETEs exact URI then confirms absence. 404/410 may mean completed one-shot.
+Signals cannot skip bounded POST persistence or independent cleanup context;
+SIGKILL, power loss and unknown server completion remain explicit limits.
 
-curl is invoked with an argument vector and bounded connection/request timeouts.
-Its default configuration, proxy variables, redirects, and retries are disabled.
-TLS verification remains enabled. Authorization values are written into a mode
-600 config file within a mode 700 temporary directory and are removed afterwards.
+CarPlay can ignore an individual POST failure after exact-URI cleanup succeeds,
+or archive a no-Location intent as ignored-post-*.json without guessing a DELETE.
+The evidence is retained, not falsely marked cleaned. Successful queue ownership
+and known-identity cleanup failure still block new requests and return exit 78.
+Manual trigger and standalone cleanup keep their stricter recovery semantics.
+Skipped/failed pulses share the hold cadence so polling cannot hammer POST.
+The optional boot-start.sh systemd unit uses RestartPreventExitStatus=78.
 
-## Purpose selection and POST contract
+HTTP: no environment proxy/redirect/insecureTLS mode, body2MiB/header64KiB,
+GET transport at most3 attempts, no status or mutation retry. Registry/light/nav
+auth never inherit. Page links stay same-origin/resource, max100 and cycle check.
 
-`--direction` matches live metadata exactly: `navigation`, `direction`, and the
-selected `left`/`right` value. Names and resource UUIDs are discovered. Name/id/URI
-selectors remain available for other effects. Every selector must match exactly
-one element.
+Controller follows continuous semantic context+derived direction, not mutable
+element id. Latest-main repeat+near-follow policy stays, with intentional unit/
+invalid-value/non-resetting-window corrections. Poll deadlines and waits honor
+both pulse expiry and the overall turn-window deadline; DELETE precedes new POST.
+Expired preflight work must not start a new POST. A POST already in flight still
+finishes under its bounded timeout to preserve Location before independent
+cleanup, so network/persistence/cleanup latency can extend actual visible timing.
+Recoverable snapshot changes wait at the normal polling cadence, with cancellable
+waits rather than a busy loop. Same-direction turns with no observable boundary
+share the window rather than inventing turn identity.
 
-The validated request body is:
+The pre-POST recheck reads context, maneuver, then context again. A stopped route,
+empty reference, changed context or changed maneuver reference skips that attempt;
+malformed or cross-origin references remain errors. A same-direction element ID
+refresh before this recheck is allowed, but a change during its reads is not.
 
-```json
-{
-  "name": "NAME_FROM_LIVE_PURPOSE",
-  "purpose": "/smartlight/purposes/UUID_FROM_LIVE_PURPOSE"
-}
-```
-
-The tested service rejects arbitrary random request names. The client uses the
-real purpose name and a validated relative purpose path. It checks configuration
-and the matching setting group without changing switches or brightness.
-
-## Request identity and state
-
-The purpose name is shared by other clients, so it is not a safe cleanup
-identity. New runs use `smartlight-short-request-v2` state and store the exact
-queue URI from the POST response's `Location` header.
-
-State is created exclusively before POST. Updates are written to a new file,
-flushed, and renamed over the previous state. Responses are recorded before
-interpreting JSON, including a response containing only `{"status":"ok"}`.
-A random local run id never becomes the service request name.
-
-Cleanup validates the URI's origin and resource, rejects overlap with the
-baseline queue, checks available name/purpose metadata, and deletes that exact
-URI. It verifies absence afterwards. An item that already ended can return
-404/410. Other items, including another client's same-name request, remain.
-
-For manual triggers, without a trustworthy saved Location after an uncertain POST, cleanup retains
-state and fails rather than attributing shared-name items to this run.
-`--confirm-absent` does not override the v2 identity requirement. Explicit
-validation rejections without Location are recorded as rejected and need no
-queue mutation. The HTTP client never retries POST.
-
-The CarPlay monitor logs and ignores failed POST attempts so polling continues.
-It removes local intent without a usable Location, including an uncertain
-timeout; older such state files are discarded at startup too. A saved Location
-is cleaned by exact URI on a best-effort basis before continuing; cleanup errors
-for a failed POST are logged and its intent is discarded too. Failed/skipped attempts wait the
-normal hold interval before another pulse is considered against fresh navigation
-and queue data. Discarding intent does not establish that the server rejected
-the request. Cleanup failures after successful POSTs retain state and exit 78.
-
-Legacy v1 states remain supported with their original unique random name,
-purpose URI, and baseline queue boundary. Legacy ambiguity confirmation applies
-only to that old identity model.
-
-## Interruptions and verification limits
-
-During POST, SIGINT/SIGTERM are deferred until the bounded request finishes and
-response identity is saved; then cleanup runs. During cleanup, further such
-signals are ignored. This cannot survive SIGKILL, power loss, an unreachable
-service, or a crash before response identity was saved.
-
-The hold duration is a client wait before DELETE, not a server TTL. Latency and
-playback scheduling affect visible timing. A player response can indicate which
-request is selected; it does not prove the physical light is visible or that a
-completed light effect is reversible.
+The independent manual Python tool lives in python-trigger/ with its parsers,
+licenses, tests and package builder. Root launchers and CarPlay are Go-only;
+Go packages need none of the Python files. See go-migration.md for layout.

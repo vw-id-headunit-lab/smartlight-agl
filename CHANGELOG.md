@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Merge main boot startup/failure cadence into the Go monitor without restoring
+  the deleted Python CarPlay implementation; retain no-receipt audit evidence
+  and stop with exit 78 when known request cleanup requires recovery.
+- Remove the duplicate Python CarPlay monitor/tests; root launchers are Go-only.
+- Move the standalone manual Python trigger, dependencies, tests and builder to
+  python-trigger/ with independent usage, rollback, packaging and CI.
+- Migrate default runtime to standard-library Go and static ARM64 packaging.
+- Preserve real-purpose request shape, Location ownership and v1/v2 recovery.
+- Normalize CarPlay distance units/reject invalid values and retain semantic max window across refreshed ids.
+- Document repeat/one-shot policy and separate registry credentials.
+
 - Add Python 2.7/3 CarPlay navigation monitoring through the existing
   `simplenavigation` HTTP service; default to read-only polling.
 - Reuse real-purpose selection, relative references, durable Location identity
