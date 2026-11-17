@@ -14,6 +14,11 @@ pagination cycles, GET-only transport retry, redirects, credential isolation,
 units and invalid values, semantic max-window across id churn, one-shot/session
 reset, complete CLI polling/cleanup, cancellation and locks.
 
+Review regressions also cover snapshot-change polling cadence and cancellation,
+max-duration shorter than hold/interval, slow preflight at the window deadline,
+service-side POST references through a path-rewriting proxy, and routes that
+stop or change their maneuver reference during the final pre-POST recheck.
+
 CI records go-test-json and cross-builds static ARM64. Local outputs/hashes stay
 under ignored artifacts/dist. Cross-build is not target execution or light proof.
 

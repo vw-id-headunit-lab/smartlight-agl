@@ -224,9 +224,12 @@ func (s *NavigationSource) StillCurrent(ctx context.Context, previous *Navigatio
 	if contextURI != previous.ContextURI {
 		return false, nil
 	}
-	uri, err := s.Client.Checked(reference(row["nextManeuver"]), "maneuvers")
+	uri, err := s.currentManeuverURI(row)
 	if err != nil {
 		return false, err
+	}
+	if uri == "" {
+		return false, nil
 	}
 	maneuver, err := s.readElement(ctx, uri, "maneuvers")
 	if err != nil {
@@ -236,7 +239,53 @@ func (s *NavigationSource) StillCurrent(ctx context.Context, previous *Navigatio
 	if err != nil {
 		return false, err
 	}
-	return event.Direction == previous.Direction && event.Eligible(s.FollowMeters), nil
+	if event.Direction != previous.Direction || !event.Eligible(s.FollowMeters) {
+		return false, nil
+	}
+	// Navigation can stop or switch its reference while the maneuver is being
+	// read. Confirm this exact snapshot before allowing a new light request.
+	confirm, err := s.readElement(ctx, contextURI, "drivingContexts")
+	if err != nil {
+		return false, err
+	}
+	if !activeContext(confirm) {
+		return false, nil
+	}
+	confirmedContext, err := s.Client.Element(confirm, "drivingContexts")
+	if err != nil {
+		return false, err
+	}
+	if confirmedContext != contextURI {
+		return false, nil
+	}
+	confirmedURI, err := s.currentManeuverURI(confirm)
+	if err != nil {
+		return false, err
+	}
+	return confirmedURI == uri, nil
+}
+
+// Empty references are normal while a route is stopping or being recalculated.
+// Malformed nonempty references still fail validation rather than being followed.
+func (s *NavigationSource) currentManeuverURI(row Object) (string, error) {
+	value := row["nextManeuver"]
+	if value == nil {
+		return "", nil
+	}
+	if object, ok := value.(map[string]any); ok {
+		value = object["uri"]
+		if value == nil {
+			return "", nil
+		}
+	}
+	raw, ok := value.(string)
+	if !ok {
+		return "", errors.New("nextManeuver requires a URI string or reference object")
+	}
+	if raw == "" {
+		return "", nil
+	}
+	return s.Client.Checked(raw, "maneuvers")
 }
 
 type StateDirectory struct{ Path, Lock string }
@@ -373,9 +422,28 @@ func (c *Controller) Expire(ctx context.Context) error {
 	c.Until = time.Time{}
 	return nil
 }
+
+// Only a pending pulse/cadence has a deadline. Once it is cleaned, keep polling
+// for a turn boundary instead of repeatedly polling with an expired window.
+func (c *Controller) pulseDeadline() time.Time {
+	deadline := c.Until
+	if !deadline.IsZero() && !c.Started.IsZero() {
+		if window := c.Started.Add(c.MaxDuration); window.Before(deadline) {
+			deadline = window
+		}
+	}
+	return deadline
+}
+
+func (c *Controller) expireIndependent() error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return c.Expire(cleanupCtx)
+}
+
 func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 	now := c.Clock()
-	if !c.Until.IsZero() && !now.Before(c.Until) {
+	if deadline := c.pulseDeadline(); !deadline.IsZero() && !now.Before(deadline) {
 		if err := c.Expire(ctx); err != nil {
 			return err
 		}
@@ -401,6 +469,9 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 		c.Started = time.Time{}
 		c.Fired = false
 	}
+	// Revoking an old pulse can take time; do not use the pre-cleanup clock
+	// reading when deciding whether a new request still fits in the window.
+	now = c.Clock()
 	if !c.Started.IsZero() && now.Sub(c.Started) >= c.MaxDuration {
 		return c.Expire(ctx)
 	}
@@ -414,12 +485,33 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 		c.Started = now
 	}
 	c.Fired = true
-	_, err := c.Sink.Start(ctx, event)
+	windowEnd := c.Started.Add(c.MaxDuration)
+	// This deadline bounds preflight as well as source reads. An already-sent
+	// POST may finish independently to preserve its receipt, then is revoked.
+	startCtx, cancel := context.WithTimeout(ctx, windowEnd.Sub(c.Clock()))
+	_, err := c.Sink.Start(startCtx, event)
+	windowExpired := errors.Is(startCtx.Err(), context.DeadlineExceeded) || !c.Clock().Before(windowEnd)
+	cancel()
+	var recovery *RecoveryRequired
+	if errors.As(err, &recovery) {
+		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if windowExpired {
+		// Some HTTP body-read errors do not wrap context.DeadlineExceeded.
+		// Expiry is a normal end to this window, not a monitor restart trigger.
+		return c.expireIndependent()
+	}
 	if err != nil {
 		return err
 	}
 	// Failed/ignored/skipped attempts wait the normal cadence too.
 	c.Until = c.Clock().Add(c.Hold)
+	if windowEnd.Before(c.Until) {
+		c.Until = windowEnd
+	}
 	return nil
 }
 
@@ -427,11 +519,7 @@ func RunMonitor(ctx context.Context, source *NavigationSource, controller *Contr
 	if log == nil {
 		log = silent
 	}
-	cleanup := func() error {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		return controller.Expire(cleanupCtx)
-	}
+	cleanup := controller.expireIndependent
 	defer func() {
 		if e := cleanup(); e != nil {
 			err = fmt.Errorf("cleanup pending: %w", e)
@@ -441,59 +529,64 @@ func RunMonitor(ctx context.Context, source *NavigationSource, controller *Contr
 		if e := ctx.Err(); e != nil {
 			return e
 		}
+		deadline := controller.pulseDeadline()
+		if !deadline.IsZero() && !controller.Clock().Before(deadline) {
+			if e := cleanup(); e != nil {
+				return e
+			}
+			deadline = time.Time{}
+		}
 		pollCtx := ctx
 		cancel := func() {}
-		if !controller.Until.IsZero() {
-			pollCtx, cancel = context.WithDeadline(ctx, controller.Until)
+		if !deadline.IsZero() {
+			pollCtx, cancel = context.WithTimeout(ctx, deadline.Sub(controller.Clock()))
 		}
 		event, e := source.Poll(pollCtx)
+		pollExpired := errors.Is(pollCtx.Err(), context.DeadlineExceeded)
 		cancel()
 		if e != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if errors.Is(e, context.DeadlineExceeded) || (!controller.Until.IsZero() && !controller.Clock().Before(controller.Until)) {
+			if pollExpired || errors.Is(e, context.DeadlineExceeded) || errors.Is(e, ErrSnapshotChanged) || (!deadline.IsZero() && !controller.Clock().Before(deadline)) {
 				if e = cleanup(); e != nil {
 					return e
 				}
-				continue
+			} else {
+				return e // GET request transport retry already happens within Client.
 			}
-			if errors.Is(e, ErrSnapshotChanged) {
-				if e = cleanup(); e != nil {
-					return e
+		} else {
+			if e = controller.Step(ctx, event); e != nil {
+				return e
+			}
+			fields := Object{"active": event != nil}
+			if event != nil {
+				fields["stage"] = event.Stage
+				fields["direction"] = event.Direction
+				if event.Distance != nil {
+					fields["distance_m"] = *event.Distance
 				}
-				continue
 			}
-			return e // GET request transport retry already happens within Client.
+			log("carplay_snapshot", fields)
 		}
-		if e = controller.Step(ctx, event); e != nil {
-			return e
-		}
-		fields := Object{"active": event != nil}
-		if event != nil {
-			fields["stage"] = event.Stage
-			fields["direction"] = event.Direction
-			if event.Distance != nil {
-				fields["distance_m"] = *event.Distance
-			}
-		}
-		log("carplay_snapshot", fields)
 		if iterations != 0 && count+1 >= iterations {
 			break
 		}
 		pause := interval
-		if !controller.Until.IsZero() {
-			if remaining := controller.Until.Sub(controller.Clock()); remaining < pause {
+		if deadline := controller.pulseDeadline(); !deadline.IsZero() {
+			if remaining := deadline.Sub(controller.Clock()); remaining < pause {
 				pause = remaining
 			}
 		}
 		if pause < 0 {
 			pause = 0
 		}
+		timer := time.NewTimer(pause)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-time.After(pause):
+		case <-timer.C:
 		}
 	}
 	return nil

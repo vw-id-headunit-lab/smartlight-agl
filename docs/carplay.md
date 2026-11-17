@@ -20,6 +20,8 @@ sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" --iterations 10
 
 来源：active appleCarPlay context→nextManeuver真实uri→当前元素→重读context确认引用。
 POST前重读当前机动，核对同上下文active、派生方向相同且eligible；允许同转弯id刷新。
+读完机动后再次确认context与引用；期间停止、空引用或引用变化则跳过本次POST。
+可恢复的快照变化仍按`--interval`等待，避免导航初始化或重算期间高频轮询。
 
 S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=left/right；
 16/27=left，15/26=right；其它组合不触发。实时查用途，不以14/15当URI。
@@ -28,6 +30,8 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 未知单位。hold到期先DELETE，仍eligible可再次POST；连续上下文+左右方向窗口不因id刷新
 重置。far/inactive/prepare/instruction或换来源/方向结束窗口；未观测到边界的同向转弯
 继续共享窗口。--one-shot选窗口一次；--follow-distance 0仅execute。
+轮询与等待同时受hold和max-duration截止时间约束；窗口到期不再启动新POST。
+已在途POST仍按超时完成并保存Location后清理，网络/持久化/清理耗时会影响实际灯效时长。
 
 | 参数 | 默认 | 意义 |
 |---|---|---|
@@ -53,6 +57,7 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 ```
 
 三侧凭据不继承、不入日志状态。prefix mapping用advertised-base/nav-advertised-base。
+代理访问前缀只用于HTTP请求地址；POST的purpose引用使用服务端路径，状态及清理保留访问路径。
 Ctrl-C/SIGTERM停止来源读取；有界POST先存Location，独立cleanup context撤销本桥项。
 慢GET受脉冲deadline限制；断电、SIGKILL、失联仍需独立恢复：
 

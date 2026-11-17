@@ -6,7 +6,9 @@ purpose/preflight, exclusive v1/v2 state, Location first, exact rollback.
 navigation.go: source snapshot/semantic revalidation, strict units, bounded turn
 window and lock. app.go: separate credentials and lifecycle contexts.
 
-POST body is real purpose name+relative validated path. State0600 intent precedes
+POST body is real purpose name+validated service-side path. Explicit proxy prefix
+mapping changes transport URLs, not the upstream purpose reference in JSON;
+state and cleanup retain the mapped transport identity. State0600 intent precedes
 mutation; Location validated/synced before JSON. Malformed/HTTP500 replies still
 preserve cleanup identity. Unknown v2 identity remains pending; no shared-name
 deletion or mutation retry. Legacy unique-name v1 keeps baseline/metadata limits.
@@ -30,9 +32,19 @@ auth never inherit. Page links stay same-origin/resource, max100 and cycle check
 
 Controller follows continuous semantic context+derived direction, not mutable
 element id. Latest-main repeat+near-follow policy stays, with intentional unit/
-invalid-value/non-resetting-window corrections. Poll deadline follows pulse
-expiry; DELETE precedes new POST. Same-direction turns with no observable boundary
-share the window rather than inventing turn identity. Network affects timing.
+invalid-value/non-resetting-window corrections. Poll deadlines and waits honor
+both pulse expiry and the overall turn-window deadline; DELETE precedes new POST.
+Expired preflight work must not start a new POST. A POST already in flight still
+finishes under its bounded timeout to preserve Location before independent
+cleanup, so network/persistence/cleanup latency can extend actual visible timing.
+Recoverable snapshot changes wait at the normal polling cadence, with cancellable
+waits rather than a busy loop. Same-direction turns with no observable boundary
+share the window rather than inventing turn identity.
+
+The pre-POST recheck reads context, maneuver, then context again. A stopped route,
+empty reference, changed context or changed maneuver reference skips that attempt;
+malformed or cross-origin references remain errors. A same-direction element ID
+refresh before this recheck is allowed, but a change during its reads is not.
 
 The independent manual Python tool lives in python-trigger/ with its parsers,
 licenses, tests and package builder. Root launchers and CarPlay are Go-only;

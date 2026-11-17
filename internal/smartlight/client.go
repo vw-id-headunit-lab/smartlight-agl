@@ -106,6 +106,22 @@ func NewClient(base, advertised, auth string, timeout time.Duration, log Logger)
 
 func (c *Client) Resource(name string) string { return c.Base.String() + name + "/" }
 
+// replaceURLPathPrefix preserves escaped resource identifiers (for example an
+// encoded slash) while replacing a previously checked, decoded path prefix.
+func replaceURLPathPrefix(u, from, to *url.URL) {
+	escaped := u.EscapedPath()
+	offset := 0
+	for i := 0; i < len(from.Path); i++ {
+		if escaped[offset] == '%' {
+			offset += 3
+		} else {
+			offset++
+		}
+	}
+	u.Path = to.Path + strings.TrimPrefix(u.Path, from.Path)
+	u.RawPath = to.EscapedPath() + escaped[offset:]
+}
+
 func (c *Client) resolve(raw, resource string, element bool) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("missing %s URI", resource)
@@ -115,21 +131,25 @@ func (c *Client) resolve(raw, resource string, element bool) (string, error) {
 	}
 	rel, _ := url.Parse(raw)
 	u := c.Advertised.ResolveReference(rel)
+	expected := c.Base.Path + resource + "/"
+	withinResource := func(path string) bool {
+		if element {
+			return strings.HasPrefix(path, expected) && strings.Trim(path[len(expected):], "/") != ""
+		}
+		return strings.TrimRight(path, "/") == strings.TrimRight(expected, "/")
+	}
 	// Explicit origin + prefix mapping, never a textual hostname substring match.
-	if origin(u) == origin(c.Advertised) && strings.HasPrefix(u.Path, c.Advertised.Path) {
+	// A saved transport URI is already mapped. Check its full resource prefix
+	// first so nested Base/Advertised paths on one origin remain idempotent.
+	alreadyMapped := origin(u) == origin(c.Base) && withinResource(u.Path)
+	if !alreadyMapped && origin(u) == origin(c.Advertised) && strings.HasPrefix(u.Path, c.Advertised.Path) {
 		clone := *u
 		clone.Scheme = c.Base.Scheme
 		clone.Host = c.Base.Host
-		clone.Path = c.Base.Path + strings.TrimPrefix(u.Path, c.Advertised.Path)
-		clone.RawPath = ""
+		replaceURLPathPrefix(&clone, c.Advertised, c.Base)
 		u = &clone
 	}
-	expected := c.Base.Path + resource + "/"
-	pathOK := strings.TrimRight(u.Path, "/") == strings.TrimRight(expected, "/")
-	if element {
-		pathOK = strings.HasPrefix(u.Path, expected) && strings.Trim(u.Path[len(expected):], "/") != ""
-	}
-	if origin(u) != origin(c.Base) || u.User != nil || u.Fragment != "" || !pathOK || (element && (u.RawQuery != "" || u.ForceQuery)) {
+	if origin(u) != origin(c.Base) || u.User != nil || u.Fragment != "" || !withinResource(u.Path) || (element && (u.RawQuery != "" || u.ForceQuery)) {
 		return "", fmt.Errorf("cross-origin or out-of-resource %s URI rejected", resource)
 	}
 	return u.String(), nil
@@ -139,6 +159,24 @@ func (c *Client) Checked(raw, resource string) (string, error) { return c.resolv
 func (c *Client) Element(row Object, resource string) (string, error) {
 	return c.Checked(str(row["uri"]), resource)
 }
+
+// ServicePath returns the service-side resource reference for a JSON payload.
+// The request URL uses Base, but a proxy's client-facing path is not a resource
+// name on the upstream service. Validate the original reference before reversing
+// the explicit prefix mapping; callers retain Checked URLs for transport/state.
+func (c *Client) ServicePath(raw, resource string) (string, error) {
+	target, err := c.Checked(raw, resource)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return "", err
+	}
+	replaceURLPathPrefix(u, c.Base, c.Advertised)
+	return u.EscapedPath(), nil
+}
+
 func reference(v any) string {
 	if row, ok := v.(map[string]any); ok {
 		return str(row["uri"])

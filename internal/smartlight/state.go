@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -335,6 +334,10 @@ func (m *RequestManager) Start(ctx context.Context, sel Selector, path string) (
 	if err != nil {
 		return false, err
 	}
+	servicePurpose, err := m.Client.ServicePath(str(purpose["uri"]), "purposes")
+	if err != nil {
+		return false, err
+	}
 	if err = Preflight(ctx, m.Client, purpose); err != nil {
 		return false, err
 	}
@@ -387,6 +390,9 @@ func (m *RequestManager) Start(ctx context.Context, sel Selector, path string) (
 			return false, nil
 		}
 	}
+	if err = ctx.Err(); err != nil {
+		return false, err
+	}
 	id, err := RandomID()
 	if err != nil {
 		return false, err
@@ -401,7 +407,6 @@ func (m *RequestManager) Start(ctx context.Context, sel Selector, path string) (
 	m.State = s
 	m.Path = path
 	m.Client.Log("state_saved", Object{"state": path})
-	p, _ := url.Parse(purposeURI)
 	hook := func(code int, location string) error {
 		s.HTTPStatus = code
 		if location != "" {
@@ -421,10 +426,20 @@ func (m *RequestManager) Start(ctx context.Context, sel Selector, path string) (
 		}
 		return WriteState(path, s, false)
 	}
+	if err = ctx.Err(); err != nil {
+		// The intent was saved, but no POST has started. Record settled absence
+		// instead of leaving an unknown receipt that would require recovery.
+		s.Phase = "rejected"
+		if saveErr := WriteState(path, s, false); saveErr != nil {
+			return false, &RecoveryRequired{Err: fmt.Errorf("persist unsent request cancellation: %w", saveErr)}
+		}
+		m.Client.Log("skipped", Object{"reason": "context_ended_before_post"})
+		return false, err
+	}
 	// Deferred cancellation: let this bounded POST finish and persist Location.
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.Client.Timeout)
 	defer cancel()
-	_, err = m.Client.Request(postCtx, http.MethodPost, m.Client.Resource("queuedpurposes"), Object{"name": name, "purpose": p.EscapedPath()}, false, hook)
+	_, err = m.Client.Request(postCtx, http.MethodPost, m.Client.Resource("queuedpurposes"), Object{"name": name, "purpose": servicePurpose}, false, hook)
 	if err != nil {
 		return false, &PostFailure{Err: err}
 	}
