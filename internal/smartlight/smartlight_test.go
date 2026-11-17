@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -38,6 +39,40 @@ type fixture struct {
 	id                                                                           string
 	stopAt, changeAt                                                             int
 	navDelay                                                                     time.Duration
+}
+
+// The HTTP handler runs on a different goroutine. Finishing a client request
+// (especially a hijacked/lost response) is not a synchronization boundary for
+// fixture memory, so assertions and runtime updates use the handler's mutex.
+type fixtureSnapshot struct {
+	writes []string
+	bodies []Object
+	paths  []string
+	auths  map[string][]string
+	count  int
+}
+
+func (f *fixture) snapshot() fixtureSnapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := fixtureSnapshot{writes: append([]string(nil), f.writes...), paths: append([]string(nil), f.paths...), count: f.count, auths: make(map[string][]string)}
+	for _, body := range f.bodies {
+		clone := make(Object, len(body))
+		for key, value := range body {
+			clone[key] = value
+		}
+		s.bodies = append(s.bodies, clone)
+	}
+	for path, values := range f.auths {
+		s.auths[path] = append([]string(nil), values...)
+	}
+	return s
+}
+
+func (f *fixture) configure(update func(*fixture)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	update(f)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -77,8 +112,9 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/simplenavigation/") {
 		if f.navDelay > 0 && f.navPolls >= 2 {
+			delay := f.navDelay
 			f.mu.Unlock()
-			time.Sleep(f.navDelay)
+			time.Sleep(delay)
 			f.mu.Lock()
 		}
 		if r.Method != "GET" {
@@ -206,7 +242,7 @@ func TestTriggerDryRunListProbeAndSelectors(t *testing.T) {
 			if code := Run(context.Background(), args, &out, &errout); code != 0 {
 				t.Fatalf("code=%d %s %s", code, &out, &errout)
 			}
-			if len(f.writes) != 0 {
+			if len(f.snapshot().writes) != 0 {
 				t.Fatal("dry-run mutated queue")
 			}
 			f.assertBaseline(t)
@@ -230,8 +266,8 @@ func TestTriggerContractStateAndCleanup(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(f.bodies, []Object{{"name": "15", "purpose": "/smartlight/purposes/left"}}) {
-		t.Fatal(f.bodies)
+	if !reflect.DeepEqual(f.snapshot().bodies, []Object{{"name": "15", "purpose": "/smartlight/purposes/left"}}) {
+		t.Fatal(f.snapshot().bodies)
 	}
 	s, err := LoadState(path)
 	if err != nil || s.QueueURI != f.server.URL+"/smartlight/queuedpurposes/created-1" || s.Phase != "posted" {
@@ -248,7 +284,7 @@ func TestTriggerContractStateAndCleanup(t *testing.T) {
 	if err = Cleanup(context.Background(), c, s, path, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.writes) != 2 {
+	if len(f.snapshot().writes) != 2 {
 		t.Fatal("cleanup not idempotent")
 	}
 }
@@ -257,8 +293,8 @@ func TestPostErrorAndMalformedBodyKeepLocationForCleanup(t *testing.T) {
 	for _, mode := range []string{"http500", "malformed"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t)
-			f.postError = mode == "http500"
-			f.badJSON = mode == "malformed"
+			f.configure(func(f *fixture) { f.postError = mode == "http500" })
+			f.configure(func(f *fixture) { f.badJSON = mode == "malformed" })
 			m := &RequestManager{Client: f.client(t), Apply: true}
 			path := filepath.Join(t.TempDir(), "run.json")
 			_, err := m.Start(context.Background(), Selector{Direction: "left"}, path)
@@ -272,7 +308,7 @@ func TestPostErrorAndMalformedBodyKeepLocationForCleanup(t *testing.T) {
 			if err = m.Stop(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if f.count != 1 {
+			if f.snapshot().count != 1 {
 				t.Fatal("POST retried")
 			}
 			f.assertBaseline(t)
@@ -282,7 +318,7 @@ func TestPostErrorAndMalformedBodyKeepLocationForCleanup(t *testing.T) {
 
 func TestMissingLocationNeverDeletesByName(t *testing.T) {
 	f := newFixture(t)
-	f.noLocation = true
+	f.configure(func(f *fixture) { f.noLocation = true })
 	m := &RequestManager{Client: f.client(t), Apply: true}
 	path := filepath.Join(t.TempDir(), "run.json")
 	_, err := m.Start(context.Background(), Selector{Direction: "left"}, path)
@@ -292,8 +328,8 @@ func TestMissingLocationNeverDeletesByName(t *testing.T) {
 	if err = m.Stop(context.Background()); err == nil {
 		t.Fatal("unknown identity falsely cleaned")
 	}
-	if f.count != 1 || len(f.writes) != 1 {
-		t.Fatal(f.writes)
+	if f.snapshot().count != 1 || len(f.snapshot().writes) != 1 {
+		t.Fatal(f.snapshot().writes)
 	}
 	s, _ := LoadState(path)
 	if s.Phase == "cleaned" {
@@ -309,17 +345,19 @@ func TestBaselineSameNameAndDisabledGroupPreserved(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t)
 			if mode == "same-name" {
-				f.queue = append(f.queue, Object{"id": "other", "name": "15", "uri": "/smartlight/queuedpurposes/other"})
+				f.configure(func(f *fixture) {
+					f.queue = append(f.queue, Object{"id": "other", "name": "15", "uri": "/smartlight/queuedpurposes/other"})
+				})
 			} else {
-				f.groupOff = true
+				f.configure(func(f *fixture) { f.groupOff = true })
 			}
 			m := &RequestManager{Client: f.client(t), Apply: true}
 			_, err := m.Start(context.Background(), Selector{Direction: "left"}, filepath.Join(t.TempDir(), "run.json"))
 			if mode == "group-off" && err == nil {
 				t.Fatal("disabled group accepted")
 			}
-			if len(f.writes) != 0 {
-				t.Fatal(f.writes)
+			if len(f.snapshot().writes) != 0 {
+				t.Fatal(f.snapshot().writes)
 			}
 		})
 	}
@@ -332,7 +370,7 @@ func TestCleanupRejectsOverlapAndMismatchedMetadata(t *testing.T) {
 	if err := Cleanup(context.Background(), c, s, filepath.Join(t.TempDir(), "s.json"), false); err == nil {
 		t.Fatal("baseline overlap accepted")
 	}
-	if len(f.writes) != 0 {
+	if len(f.snapshot().writes) != 0 {
 		t.Fatal("deleted baseline")
 	}
 }
@@ -381,19 +419,19 @@ func TestPaginationAndCycle(t *testing.T) {
 
 func TestGetRetryAndRedirect(t *testing.T) {
 	f := newFixture(t)
-	f.getDrops = 1
+	f.configure(func(f *fixture) { f.getDrops = 1 })
 	c := f.client(t)
 	if _, err := c.Collection(context.Background(), "purposes"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.paths) != 2 {
-		t.Fatalf("GET retry count %d", len(f.paths))
+	if len(f.snapshot().paths) != 2 {
+		t.Fatalf("GET retry count %d", len(f.snapshot().paths))
 	}
-	f.redirect = true
+	f.configure(func(f *fixture) { f.redirect = true })
 	if _, err := c.Collection(context.Background(), "purposes"); err == nil {
 		t.Fatal("redirect accepted")
 	}
-	if strings.Contains(strings.Join(f.paths, "\n"), "/foreign") {
+	if strings.Contains(strings.Join(f.snapshot().paths, "\n"), "/foreign") {
 		t.Fatal("redirect followed")
 	}
 }
@@ -408,14 +446,14 @@ func TestRegistryCredentialsDoNotFlowToService(t *testing.T) {
 	if _, err = c.Collection(context.Background(), "drivingContexts"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.auths["/registry/"]; len(got) != 1 || got[0] != "Bearer registry" {
+	if got := f.snapshot().auths["/registry/"]; len(got) != 1 || got[0] != "Bearer registry" {
 		t.Fatal(got)
 	}
-	if got := f.auths["/simplenavigation/drivingContexts/"]; len(got) != 1 || got[0] != "Bearer nav" {
+	if got := f.snapshot().auths["/simplenavigation/drivingContexts/"]; len(got) != 1 || got[0] != "Bearer nav" {
 		t.Fatal(got)
 	}
-	if f.paths[0] != "GET /registry/?name=simplenavigation" {
-		t.Fatal(f.paths)
+	if f.snapshot().paths[0] != "GET /registry/?name=simplenavigation" {
+		t.Fatal(f.snapshot().paths)
 	}
 }
 
@@ -508,18 +546,18 @@ func TestNavigationPollRevalidationAndSourceFilters(t *testing.T) {
 	if err != nil || e.Direction != "left" {
 		t.Fatal(e, err)
 	}
-	f.id = "refreshed"
-	f.direction = 96
+	f.configure(func(f *fixture) { f.id = "refreshed" })
+	f.configure(func(f *fixture) { f.direction = 96 })
 	ok, err := source.StillCurrent(context.Background(), e)
 	if err != nil || !ok {
 		t.Fatal("same semantic turn id churn", ok, err)
 	}
-	f.direction = 192
+	f.configure(func(f *fixture) { f.direction = 192 })
 	ok, err = source.StillCurrent(context.Background(), e)
 	if err != nil || ok {
 		t.Fatal("opposite direction accepted", ok, err)
 	}
-	f.technology = "androidAuto"
+	f.configure(func(f *fixture) { f.technology = "androidAuto" })
 	e, err = source.Poll(context.Background())
 	if err != nil || e != nil {
 		t.Fatal(e, err)
@@ -532,20 +570,20 @@ func TestNavigationRejectsCrossOriginAndInvalidDistance(t *testing.T) {
 			f := newFixture(t)
 			switch mode {
 			case "cross":
-				f.crossRef = true
+				f.configure(func(f *fixture) { f.crossRef = true })
 			case "negative":
-				f.distance = -1
+				f.configure(func(f *fixture) { f.distance = -1 })
 			case "bool":
-				f.distance = true
+				f.configure(func(f *fixture) { f.distance = true })
 			case "unit":
-				f.unit = "bad"
+				f.configure(func(f *fixture) { f.unit = "bad" })
 			}
 			c, _ := NewClient(f.server.URL+"/simplenavigation/", "", "", time.Second, nil)
 			_, err := (&NavigationSource{Client: c, FollowMeters: 150}).Poll(context.Background())
 			if err == nil {
 				t.Fatal("accepted malformed snapshot")
 			}
-			if len(f.writes) != 0 {
+			if len(f.snapshot().writes) != 0 {
 				t.Fatal("mutated")
 			}
 		})
@@ -554,7 +592,7 @@ func TestNavigationRejectsCrossOriginAndInvalidDistance(t *testing.T) {
 
 func TestCarplayCLIEndToEndAndRollback(t *testing.T) {
 	f := newFixture(t)
-	f.stopAt = 3
+	f.configure(func(f *fixture) { f.stopAt = 3 })
 	dir := filepath.Join(t.TempDir(), "state")
 	var out, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"carplay", "--base", f.server.URL + "/smartlight/", "--nav-registry", f.server.URL + "/registry/", "--state-dir", dir, "--interval", "0.1", "--hold", "0.1", "--iterations", "3", "--apply", "--one-shot"}, &out, &stderr)
@@ -562,8 +600,8 @@ func TestCarplayCLIEndToEndAndRollback(t *testing.T) {
 		t.Fatalf("code %d %s %s", code, &out, &stderr)
 	}
 	f.assertBaseline(t)
-	if len(f.writes) != 2 {
-		t.Fatal(f.writes)
+	if len(f.snapshot().writes) != 2 {
+		t.Fatal(f.snapshot().writes)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "carplay-monitor.lock")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("lock not released")
@@ -584,7 +622,7 @@ func TestCancellationDefersPostThenCleans(t *testing.T) {
 	c := f.client(t)
 	// Cancel as soon as a POST response identity has been durably recorded.
 	log := func(event string, _ Object) {
-		if event == "http" && f.count == 1 {
+		if event == "http" && f.snapshot().count == 1 {
 			cancel()
 		}
 	}
@@ -628,9 +666,9 @@ func TestNavigationPostFailureContinuesAfterExactCleanup(t *testing.T) {
 	for _, mode := range []string{"http500", "bad-json", "missing-location"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t)
-			f.postError = mode == "http500"
-			f.badJSON = mode == "bad-json"
-			f.noLocation = mode == "missing-location"
+			f.configure(func(f *fixture) { f.postError = mode == "http500" })
+			f.configure(func(f *fixture) { f.badJSON = mode == "bad-json" })
+			f.configure(func(f *fixture) { f.noLocation = mode == "missing-location" })
 			nav, _ := NewClient(f.server.URL+"/simplenavigation/", "", "", time.Second, nil)
 			source := &NavigationSource{Client: nav, FollowMeters: 150}
 			dir, err := OpenStateDirectory(filepath.Join(t.TempDir(), "states"), true)
@@ -647,8 +685,8 @@ func TestNavigationPostFailureContinuesAfterExactCleanup(t *testing.T) {
 			if err != nil || ok || sink.Manager.State != nil {
 				t.Fatalf("ignored failure: %v %v", ok, err)
 			}
-			if f.count != 1 {
-				t.Fatalf("POST retried: %d", f.count)
+			if f.snapshot().count != 1 {
+				t.Fatalf("POST retried: %d", f.snapshot().count)
 			}
 			if mode == "missing-location" {
 				archives, _ := filepath.Glob(filepath.Join(dir.Path, "ignored-post-*.json"))
@@ -659,8 +697,8 @@ func TestNavigationPostFailureContinuesAfterExactCleanup(t *testing.T) {
 				if err != nil || s.Phase == "cleaned" || s.QueueURI != "" {
 					t.Fatal("falsely marked clean", s, err)
 				}
-				if len(f.writes) != 1 {
-					t.Fatal("guessed delete", f.writes)
+				if len(f.snapshot().writes) != 1 {
+					t.Fatal("guessed delete", f.snapshot().writes)
 				}
 			} else {
 				f.assertBaseline(t)
@@ -671,7 +709,7 @@ func TestNavigationPostFailureContinuesAfterExactCleanup(t *testing.T) {
 
 func TestKnownFailedPostCleanupRemainsRecoveryRequired(t *testing.T) {
 	f := newFixture(t)
-	f.postError, f.deleteError = true, true
+	f.configure(func(f *fixture) { f.postError, f.deleteError = true, true })
 	var out, stderr bytes.Buffer
 	dir := filepath.Join(t.TempDir(), "states")
 	code := Run(context.Background(), []string{"carplay", "--base", f.server.URL + "/smartlight/", "--nav-base", f.server.URL + "/simplenavigation/", "--state-dir", dir, "--iterations", "1", "--apply"}, &out, &stderr)
@@ -686,8 +724,8 @@ func TestKnownFailedPostCleanupRemainsRecoveryRequired(t *testing.T) {
 	if s.QueueURI == "" || s.Phase == "cleaned" {
 		t.Fatal("known pending identity lost", s)
 	}
-	if f.count != 1 {
-		t.Fatal("failure caused new POST", f.count)
+	if f.snapshot().count != 1 {
+		t.Fatal("failure caused new POST", f.snapshot().count)
 	}
 }
 
@@ -761,7 +799,7 @@ func TestCLIArgumentValidation(t *testing.T) {
 
 func TestSlowSourceReadExpiresAndCleansPulse(t *testing.T) {
 	f := newFixture(t)
-	f.navDelay = 500 * time.Millisecond
+	f.configure(func(f *fixture) { f.navDelay = 500 * time.Millisecond })
 	c := f.client(t)
 	nav, _ := NewClient(f.server.URL+"/simplenavigation/", "", "", time.Second, nil)
 	source := &NavigationSource{Client: nav, FollowMeters: 150}
@@ -778,15 +816,15 @@ func TestSlowSourceReadExpiresAndCleansPulse(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.assertBaseline(t)
-	if len(f.writes) != 2 {
-		t.Fatal(f.writes)
+	if len(f.snapshot().writes) != 2 {
+		t.Fatal(f.snapshot().writes)
 	}
 }
 
 func TestTransportNeverReplaysPOSTAfterLostResponse(t *testing.T) {
-	var count int
+	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count++
+		count.Add(1)
 		conn, _, _ := w.(http.Hijacker).Hijack()
 		conn.Close()
 	}))
@@ -795,7 +833,7 @@ func TestTransportNeverReplaysPOSTAfterLostResponse(t *testing.T) {
 	if _, err := c.Request(context.Background(), http.MethodPost, c.Resource("queuedpurposes"), Object{"name": "x", "purpose": "/smartlight/purposes/x"}, false, nil); err == nil {
 		t.Fatal("lost response expected")
 	}
-	if count != 1 {
-		t.Fatalf("POST replayed %d times", count)
+	if got := count.Load(); got != 1 {
+		t.Fatalf("POST replayed %d times", got)
 	}
 }

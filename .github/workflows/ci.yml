@@ -1,6 +1,6 @@
 name: CI
 
-on:
+'on':
   push:
   pull_request:
   workflow_dispatch:
@@ -31,6 +31,14 @@ jobs:
           go vet ./...
       - name: Static ARM64 package
         run: go run ./cmd/build-release
+      - name: Keep Go release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-go-linux-arm64
+          path: |
+            dist/smartlight-agl-go-linux-arm64.tar.gz
+            dist/smartlight-agl-go-linux-arm64.tar.gz.sha256
+          if-no-files-found: error
       - name: Keep reports/package
         if: always()
         uses: actions/upload-artifact@v4
@@ -55,6 +63,14 @@ jobs:
           python python-trigger/tests/test_trigger.py
       - name: Standalone Python package
         run: python python-trigger/tools/build_release.py
+      - name: Keep Python debugging release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-python-trigger
+          path: |
+            python-trigger/dist/smartlight-python-trigger.tar.gz
+            python-trigger/dist/smartlight-python-trigger.tar.gz.sha256
+          if-no-files-found: error
       - name: Keep Python trigger report/package
         if: always()
         uses: actions/upload-artifact@v4
@@ -64,3 +80,70 @@ jobs:
             python-trigger/artifacts/
             python-trigger/dist/
           if-no-files-found: ignore
+
+  publish-main-release:
+    name: Publish tested main build
+    needs: [go-runtime, python-trigger]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs['go-runtime'].result == 'success' && needs['python-trigger'].result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: main-release-${{ github.repository }}-${{ github.sha }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download tested Go runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: release-go-linux-arm64
+          path: release-assets/go
+      - name: Download tested Python debugging tool
+        uses: actions/download-artifact@v4
+        with:
+          name: release-python-trigger
+          path: release-assets/python
+      - name: Verify asset checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-assets/go && sha256sum --check smartlight-agl-go-linux-arm64.tar.gz.sha256)
+          (cd release-assets/python && sha256sum --check smartlight-python-trigger.tar.gz.sha256)
+      - name: Create or update the commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="main-${GITHUB_SHA}"
+          title="SmartLight via CarPlay - main ${GITHUB_SHA:0:7}"
+          cat > release-notes.md <<EOF
+          Automated build of main commit ${GITHUB_SHA}.
+          Source: https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}
+
+          正常 CarPlay 联动 / CarPlay runtime:
+          - smartlight-agl-go-linux-arm64.tar.gz: static Linux ARM64 Go runtime with Chinese and English guides.
+          - Its .sha256 file verifies the archive.
+
+          仅手动调试 / Manual debugging only:
+          - smartlight-python-trigger.tar.gz: standalone Python trigger, not a CarPlay monitor.
+          - Its .sha256 file verifies the archive.
+
+          Go tests, race detection, vet, and the standalone Python mock tests passed before publishing.
+          No physical vehicle validation is implied by this automated release.
+          EOF
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GH_REPO" --title "$title" --notes-file release-notes.md
+          else
+            gh release create "$tag" --repo "$GH_REPO" --target "$GITHUB_SHA" \
+              --title "$title" --notes-file release-notes.md
+          fi
+          gh release upload "$tag" --repo "$GH_REPO" --clobber \
+            release-assets/go/smartlight-agl-go-linux-arm64.tar.gz \
+            release-assets/go/smartlight-agl-go-linux-arm64.tar.gz.sha256 \
+            release-assets/python/smartlight-python-trigger.tar.gz \
+            release-assets/python/smartlight-python-trigger.tar.gz.sha256

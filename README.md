@@ -1,150 +1,236 @@
-# smartlight-agl — Go runtime
+# SmartLight via CarPlay — CarPlay 导航联动 ID.Light
 
-通过现有SmartLight HTTP服务请求ID.Light灯效，读取车机已有simplenavigation的CarPlay当前导航。
-此分支默认运行时迁移为**单一Go二进制**，目标AGL不需要Python、curl或pip。
-默认只读预演，只有--apply才创建请求；本轮仅本地模拟，未做实车Go联调。
-不改写固件、亮度或功能开关，使用既有服务访问方式并在停车状态核对。
+[简体中文](README.md) | [English](README.en.md)
 
-## 构建与安装
+让 **iPhone 高德等 CarPlay 导航的当前转向信息联动 ID.Light 灯带**。
+程序读取车机已有的 `simplenavigation` 服务，再通过 SmartLight 请求灯效；
+不抓屏、不解析原始 iAP2，也不需要修改手机 App。
 
-开发机需要Go1.22+，只用标准库，无外部模块依赖。
+**正常使用流程：部署 Go 运行包 → 配置地址 → 只读预演 → 启用联动。**
+目标车机不需要 Python、curl 或 Go 编译器。手动触发只是排查灯带链路的调试工具，
+不代替自动联动，见[调试说明](docs/debugging.md)。
+
+> 这是社区工具，使用现有服务访问方式，不修改固件、亮度或功能开关。
+> 以下功能在本地模拟服务验证；Go 版本尚未完成实车联动验证。先在停车状态核对。
+
+## 1. 准备并部署
+
+需要：
+
+- iPhone 已连接 CarPlay，且高德等导航正在提供导航信息。
+- 车机存在可读取的 `simplenavigation` 服务和可访问的 SmartLight 服务。
+- HMI 中已开启需要的 ID.Light 导航/转向提示功能。
+- 与车机架构匹配的运行包：本项目默认构建静态 Linux ARM64。
+
+在开发机安装 Go 1.22+ 后，从项目根目录构建运行包：
 
 ```sh
-# 本机可执行文件
-CGO_ENABLED=0 go build -trimpath -o smartlight-agl ./cmd/smartlight-agl
-
-# AGL静态Linux ARM64二进制
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
-  -ldflags='-s -w' -o dist/smartlight-agl ./cmd/smartlight-agl
-
-# 含二进制、启动器、文档和许可的确定性运行包
 go run ./cmd/build-release
 ```
 
-默认输出dist/smartlight-agl-go-linux-arm64.tar.gz及sha256。
-解包后smartlight-agl、trigger_light.sh、carplay_light.sh、rollback.sh及可选boot-start.sh保持同级。
-目标不需要Go编译器。根目录三个启动器仅调用Go。
-Python手动触发工具独立保存在[python-trigger/](python-trigger/README.md)，
-不含CarPlay实现，也不装进Go运行包；两套工具无需相互依赖。
-
-## 服务地址
-
-保留用户提供的SmartLight地址：
+输出 `dist/smartlight-agl-go-linux-arm64.tar.gz` 和 `.sha256`。
+将运行包复制到车机选定目录后解压，**后续命令均在解压出的目录内运行**：
 
 ```sh
+tar -xzf smartlight-agl-go-linux-arm64.tar.gz
+cd smartlight-agl
+```
+
+保持 `smartlight-agl` 二进制、`carplay_light.sh`、`rollback.sh`、`trigger_light.sh`
+和可选的 `boot-start.sh` 在同一级。不要把开发机上的 Windows 可执行文件复制到 AGL。
+
+### 从 GitHub Release 下载
+
+`main` 每次推送，或在 `main` 上手动运行 CI，均在 Go 与 Python 检查全部通过后
+自动发布 [GitHub Release](https://github.com/vw-id-headunit-lab/smartlight-agl/releases)。
+选择 `main-<完整提交 SHA>` 对应的版本，正常联动下载 **`smartlight-agl-go-linux-arm64.tar.gz`**
+及其 `.sha256`，不要把 Python 调试包当作 CarPlay 运行包。
+
+```sh
+sha256sum -c smartlight-agl-go-linux-arm64.tar.gz.sha256
+```
+
+PR、其它分支、标签推送和失败的 CI 不发布。相同提交重跑会更新其 Release 及同名附件，
+不会每次创建重复版本；测试日志仍只保存为 Actions artifact，不上传到 Release。
+CI 自动发布不等于实车验证，最终使用前仍应按下面步骤预演。
+
+## 2. 配置灯效地址与导航服务发现
+
+在当前 shell 中设置：
+
+```sh
+# 当前提供的 SmartLight 地址
 HOST='http://[fd53:7cb8:383:3::73]:49520'
 BASE="$HOST/smartlight/"
-./smartlight-agl list --base "$BASE"
-```
 
-IPv6保留方括号，直接写http://，不要加反斜杠。AGL/QNX的[::1]不同，工具不建跨VM转发。
-
-## 手动灯效
-
-```sh
-# 默认预演，无写入
-./smartlight-agl trigger --base "$BASE" --direction left
-# 实际请求，客户端2秒后撤销自己的队列项
-./smartlight-agl trigger --base "$BASE" --direction right --hold 2 --apply
-# 兼容shell形式，支持中文方向
-sh trigger_light.sh trigger --base "$BASE" --direction 左转 --apply
-./smartlight-agl probe --base "$BASE"
-./smartlight-agl trigger --base "$BASE" --purpose '真实用途名称或资源ID'
-./smartlight-agl trigger --base "$BASE" --purpose-uri '/smartlight/purposes/真实资源ID'
-```
-
-实时purposes唯一匹配navigation/direction/left或right。POST是实际purpose.name与相对路径，
-不写死14/15或UUID。hold为0.1–5秒，是客户端目标时长，不是服务器TTL。
-
-### 独立 Python 触发工具
-
-需要精简Python 2.7/3 + curl版本时，可单独复制`python-trigger/`目录。
-它只保留手动灯效和清理，不包含重复的CarPlay监控：
-
-```sh
-sh python-trigger/trigger_light.sh list --base "$BASE"
-sh python-trigger/trigger_light.sh trigger --base "$BASE" --direction left --hold 2 --apply
-sh python-trigger/rollback.sh --state /tmp/日志中的实际状态.json
-```
-
-完整参数、测试及独立打包见[Python触发说明](python-trigger/README.md)。
-不再用`SMARTLIGHT_RUNTIME=python`切换根目录启动器。
-
-## CarPlay联动
-
-这是**iPhone经CarPlay提供的导航**，不是Android本地高德。连接CarPlay并开始导航：
-
-```sh
+# 在车机 AGL 环境中查询导航服务的注册中心
 REGISTRY='http://[::1]:80'
-# 预演10次；注册中心解析导航服务
-./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" --iterations 10
-# 持续实际联动
-./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" \
-  --apply --interval 0.5 --hold 2 --max-duration 30 --state-dir /tmp/smartlight-carplay
-# 已知实际导航地址时替代registry，必须二选一
-NAV_BASE='http://HEADUNIT_HOST:NAV_PORT/simplenavigation/'
-sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" --iterations 10
 ```
 
-注册查询是GET /?name=simplenavigation，唯一匹配的返回uri才是service。
-不猜导航端口，不把registry当service，HEADUNIT_HOST/NAV_PORT是占位值。
+IPv6 地址保留方括号，直接写 `http://`，不要写 `http\://`。
+`--nav-registry` 会查询 `/?name=simplenavigation` 并使用返回的实际导航 URI；
+**不要把 SmartLight 的 49520 端口套用到导航服务，也不要把注册中心当成导航服务。**
 
-### 默认策略与有意修正
+`[::1]` 指当前系统的回环。以上导航注册中心地址用于车机本机，不是电脑或 Android
+分区的回环；程序不会自动创建 AGL/QNX 跨系统转发。
 
-- 只处理active appleCarPlay当前nextManeuver；POST前复核来源及派生方向。
-- 沿用最新main的有界重复脉冲：execute，或follow且合法剩余距离≤150**米**。
-- m/km/mi/yd/ft归一化；0.2km是200m。拒绝bool/负/非有限/字符串/未知单位。
-- hold到期先撤销旧项，仍eligible再新建脉冲，直到max-duration。
-- 窗口按连续上下文+派生左右方向跟踪，不因元素id/raw方向变体刷新重置。
-  far/inactive/prepare/instruction或方向/上下文变化结束窗口。
-- 无可观测边界的相邻同向转弯不猜新窗口，仍受已有上限约束。
-- --one-shot选择窗口一次；--follow-distance 0关闭follow策略，仅execute。
+## 3. 先只读预演
 
-这明确修正旧Python的单位/异常值/窗口问题，不声称阈值是Apple或所有固件通用标准。
-S2995平台方向映射在其它固件应先预演。[完整参数](docs/carplay.md)。
+连接 CarPlay，在手机导航里开始一条路线，然后运行：
 
-## 凭据、清理与回退
+```sh
+# 读取 10 轮后退出；没有 --apply，不创建灯效请求
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" --iterations 10
+```
+
+观察 JSON 日志：
+
+| 日志 | 看什么 |
+|---|---|
+| `carplay_started` | `apply` 应为 `false`，数据源为已有导航服务 |
+| `carplay_snapshot` | `active`、`stage`、`direction`，以及可用时的 `distance_m` |
+| `plan` / `dry_run` | 满足触发条件时选中了实际灯效用途，但没有写入 |
+
+未发现活跃 CarPlay 导航时 `active=false`，不是要求手动发一个左转请求。
+如果没有读到当前机动，先检查 CarPlay 导航、注册中心返回地址、访问凭据和网络上下文；
+不要直接加 `--apply` 掩盖读取问题。
+
+## 4. 启用自动联动
+
+确认预演中的方向和导航状态符合当前路线后，运行：
+
+```sh
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --apply --interval 2 --hold 3 --max-duration 30 \
+  --state-dir /tmp/smartlight-carplay
+```
+
+也可直接调用二进制，行为相同：
 
 ```sh
 ./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" \
+  --apply --interval 2 --hold 3 --max-duration 30 \
+  --state-dir /tmp/smartlight-carplay
+```
+
+> **闪屏提示：建议使用 `--interval 2 --hold 3`（也是当前默认值）。**
+> 如果 `--interval` 小于 2 秒，或 `--hold` 小于 3 秒，可能导致屏幕闪屏。
+
+这是 **iPhone 经 CarPlay 提供的导航**，不是车机 Android 分区里独立运行的高德 APK。
+程序只跟随 active `appleCarPlay` 的当前 `nextManeuver`，不播放未来路口。
+灯效用途从实时目录按左右语义匹配，不写死电影编号或资源 UUID。
+
+### 默认什么时候提示
+
+- `execute` 阶段，或 `follow` 且合法剩余距离不超过 **150 米**。
+- 距离单位 `m/km/mi/yd/ft` 会换算到米；直行、未知方向及不合法距离不会猜测为转向。
+- 每个脉冲目标保持 3 秒，先撤销旧请求；仍符合条件时可重新请求。
+- 连续同一转向窗口最多 30 秒，机动元素 ID 刷新不会重置上限。
+- 远离路口、导航停止、非触发阶段、方向或上下文变化时结束该窗口。
+
+这是当前 S2995 平台策略，不表示所有车型或 CarPlay 实现采用相同编码/阈值。
+`--hold` 是客户端撤销时机，不是服务端 TTL；网络和清理确认会影响实际时长。
+
+### 按需调整
+
+| 参数 | 默认值 | 作用 |
+|---|---|---|
+| `--interval` | `2` 秒 | 两轮读取的等待时间，HTTP 请求本身另占时间；低于 2 秒可能闪屏 |
+| `--hold` | `3` 秒 | 单个灯效请求的目标保持时长，范围 0.1–5 秒；低于 3 秒可能闪屏 |
+| `--max-duration` | `30` 秒 | 连续语义转向窗口上限，范围 1–300 秒 |
+| `--follow-distance` | `150` 米 | follow 接近触发阈值；设为 0 只接受 execute |
+| `--one-shot` | 关闭 | 每个语义转向窗口只播放一个脉冲，不重复请求 |
+| `--timeout` | `2` 秒 | 每个 HTTP 请求的超时；GET 传输失败最多尝试 3 次 |
+| `--iterations` | `0` | 0 持续运行，正整数为读取轮数 |
+| `--state-dir` | 临时目录下的 `smartlight-carplay` | 本次请求身份和监控锁目录 |
+
+例如，只在 execute 阶段提示且每个窗口只发一次：
+
+```sh
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --apply --follow-distance 0 --one-shot --state-dir /tmp/smartlight-carplay
+```
+
+## 5. 停止与恢复
+
+前台运行时按 **Ctrl-C**，或向监控进程发送 SIGTERM。程序会停止读取并尝试撤销
+自己创建的灯效项，不清空其它业务的队列。
+
+断电、SIGKILL、网络故障等可能留下待恢复状态。保留 `state_saved` /
+`cleanup_pending` 日志，使用其中的**真实文件路径**：
+
+```sh
+sh rollback.sh --state '/tmp/smartlight-carplay/carplay-实际随机值.json'
+```
+
+需要灯效凭据时给清理命令加 `--auth-file /path/to/light-header.txt`。
+不要同时运行多个联动实例，也不要通过换状态目录绕过未完成请求或遗留锁。
+
+- `carplay_post_ignored`：该次 POST 失败后按正常节奏继续；无 Location 的意图
+  会归档为 `ignored-post-*.json`，**不代表服务端一定没有接受请求**。
+- 已知 Location 但清理失败：保留请求身份并退出 **78**，先恢复再重启。
+- 需要处理遗留锁时，先确认旧进程结束并恢复未完成项，再按[恢复说明](docs/carplay.md)
+  移除空锁目录；不要按公共用途名称猜测删除目标。
+
+## 6. 可选：开机启动
+
+先完成前台预演和联动验证。`boot-start.sh` 用于由已有 boot hook 调用，
+或在目标车机上手动启动独立 systemd 服务：
+
+```sh
+# 会创建/启动服务并启用 --apply，不是只读检查
+sh boot-start.sh
+```
+
+它写入 `/run/systemd/system/smartlight-carplay.service`，使用脚本内的 HOST 与
+本机注册中心，日志在部署目录的 `carplay-light.log`。普通失败 5 秒后重启，
+退出 78 时停止自动重启。它不会自动修改现有 boot hook；`/run` 中的服务文件也不跨重启持久保存。
+有鉴权或自定义地址时先核对启动脚本参数，不要直接套用无凭据的启动配置。
+
+```sh
+systemctl status smartlight-carplay.service
+systemctl stop smartlight-carplay.service
+```
+
+不需要开机联动就不要运行 `boot-start.sh`。详细安装边界和恢复步骤见
+[CarPlay 接入说明](docs/carplay.md)。
+
+## 7. 鉴权或已知导航 URI
+
+服务需要鉴权时，分别提供权限为 600、内容为完整 Authorization 值的文件：
+
+```sh
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
   --auth-file /path/to/light-header.txt \
   --nav-auth-file /path/to/navigation-header.txt \
   --nav-registry-auth-file /path/to/registry-header.txt --apply
 ```
 
-三侧凭据独立不继承，不入日志状态。只为需要的一侧传参；前缀映射分别用
---advertised-base和--nav-advertised-base。无环境代理、重定向或不验证TLS选项。
-只有GET运输失败最多3次，POST/DELETE不自动重试。
-
-POST前落盘意图，Location先保存再解析JSON；只删准确队列URI，保留其他请求。
-Ctrl-C/SIGTERM先完成有界POST身份记录再清理。断电/SIGKILL/网络故障按日志状态恢复：
+只给需要的一侧传参，灯效、导航和注册中心的凭据互不继承，不写进日志或状态文件。
+如果已经取得实际导航服务 URI，可以**替代**注册中心参数：
 
 ```sh
-./smartlight-agl cleanup --state /tmp/日志中的实际状态.json
-sh rollback.sh --state /tmp/日志中的实际状态.json
+# 主机、端口须替换为已确认的导航服务地址，不猜测端口
+NAV_BASE='http://HEADUNIT_HOST:NAV_PORT/simplenavigation/'
+sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" --iterations 10
 ```
 
-兼容Python v1/v2状态；未知身份保留，不按公共名称删项，confirm-absent不绕过v2身份。
-CarPlay目录锁和未完成状态会阻止重复apply；不自动抢占遗留锁。
+`--nav-base` 与 `--nav-registry` 必须二选一。已有代理/转发使响应广播的 URI 前缀不同时，
+使用 `--advertised-base` / `--nav-advertised-base` 显式映射；工具不自动创建转发。
 
-CarPlay合入main的连续运行策略：一次失败POST在准确清理成功后可忽略；无Location时
-归档`ignored-post-*.json`保留证据并继续，不能据此认定未入队。有Location但清理失败
-仍保留状态并返回78。可选`boot-start.sh`显式运行时会创建systemd服务并启用`--apply`，
-不是预演命令；恢复错误78会停止自动重启。详见[失败恢复与开机启动](docs/carplay.md)。
+## 调试与开发资料
 
-## 验证
+**手动亮灯只用于确认灯效服务链路，不是日常 CarPlay 联动步骤。**
 
-```sh
-go test -count=1 ./...
-go vet ./...
-go test -race ./...       # Linux CI；本机需支持race的工具链
-go run ./cmd/build-release
-```
+- [调试工具](docs/debugging.md)：灯效目录/诊断、短时手动触发和独立 Python 触发工具。
+- [CarPlay 参数与恢复](docs/carplay.md)：来源复核、平台方向映射、队列身份和启动边界。
+- [测试](docs/testing.md) · [设计](docs/design.md) · [迁移说明](docs/go-migration.md) · [排错](docs/troubleshooting.md)。
 
-只访问localhost httptest，未执行车控。交叉编译不是目标运行或物理灯带验证。
-[迁移/设计/回退](docs/go-migration.md) · [测试](docs/testing.md) · [排错](docs/troubleshooting.md)。
+开发机自检：`go test -count=1 ./...`、`go vet ./...`；支持 race 的工具链可执行
+`go test -race ./...`。这些测试访问本机模拟服务，交叉编译和测试通过不等于实车灯带验证。
 
 ## 许可
 
-项目沿用[MIT](LICENSE)；Python解析模块位于`python-trigger/vendor/`，来源与许可见
-[第三方声明](THIRD_PARTY_NOTICES.md)。Go运行包不依赖这些模块。
+项目自有代码采用 [MIT](LICENSE)。Go 运行包不依赖 Python，并附带实际构建工具链的
+Go/标准库许可及来源哈希；独立 Python 调试包另保留 CPython 解析器许可。
+两类包的许可范围见[第三方声明](THIRD_PARTY_NOTICES.md)。

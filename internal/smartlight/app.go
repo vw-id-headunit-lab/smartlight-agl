@@ -31,7 +31,7 @@ CarPlay reads existing simplenavigation; it never intercepts raw iAP2.
 `
 
 func parseOptions(args []string, stderr io.Writer) (Options, error) {
-	o := Options{Hold: 2, Timeout: 3, Interval: .5, MaxDuration: 30, FollowMeters: 150}
+	o := Options{Hold: 2, Timeout: 3, Interval: 2, MaxDuration: 30, FollowMeters: 150}
 	if len(args) == 0 {
 		return o, errors.New("one command is required")
 	}
@@ -69,8 +69,8 @@ func parseOptions(args []string, stderr io.Writer) (Options, error) {
 		fs.StringVar(&o.NavAuthFile, "nav-auth-file", "", "navigation-only Authorization file")
 		fs.StringVar(&o.RegistryAuthFile, "nav-registry-auth-file", "", "registry-only Authorization file; never inherited by service")
 		fs.StringVar(&o.StateDir, "state-dir", "", "private state directory (default TMPDIR/smartlight-carplay)")
-		fs.Float64Var(&o.Hold, "hold", 2, "individual pulse hold seconds, 0.1..5")
-		fs.Float64Var(&o.Interval, "interval", .5, "poll delay seconds, 0.1..5")
+		fs.Float64Var(&o.Hold, "hold", 3, "individual pulse hold seconds, 0.1..5; below 3 may cause display flicker")
+		fs.Float64Var(&o.Interval, "interval", 2, "poll delay seconds, 0.1..5; below 2 may cause display flicker")
 		fs.Float64Var(&o.MaxDuration, "max-duration", 30, "max semantic-turn window seconds, 1..300; id refresh does not reset")
 		fs.Float64Var(&o.FollowMeters, "follow-distance", 150, "follow-stage threshold in meters, 0..1000; 0 disables follow trigger")
 		fs.IntVar(&o.Iterations, "iterations", 0, "stop after N polls; 0 means continuous")

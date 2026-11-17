@@ -8,11 +8,15 @@ BASE="$HOST/smartlight/"
 REGISTRY='http://[::1]:80'
 ./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" --iterations 10
 ./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" --apply \
-  --hold 2 --max-duration 30 --state-dir /tmp/smartlight-carplay
+  --interval 2 --hold 3 --max-duration 30 --state-dir /tmp/smartlight-carplay
 # 或采用已确认的service URI，和registry必须二选一
 NAV_BASE='http://HEADUNIT_HOST:NAV_PORT/simplenavigation/'
 sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" --iterations 10
 ```
+
+> **建议使用 `--interval 2 --hold 3`，也是 CarPlay 命令和开机脚本的默认配置。**
+> 如果 `--interval` 小于 2 秒，或 `--hold` 小于 3 秒，可能导致屏幕闪屏。
+> 较小的值仍可用于本地模拟调试，不建议用于实车联动。
 
 来源：active appleCarPlay context→nextManeuver真实uri→当前元素→重读context确认引用。
 POST前重读当前机动，核对同上下文active、派生方向相同且eligible；允许同转弯id刷新。
@@ -30,8 +34,8 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 | --base | 必填 | SmartLight service URI |
 | --nav-base / --nav-registry | 二选一必填 | 实际导航服务/注册中心 |
 | --apply | false | 创建请求，默认只读 |
-| --interval | 0.5 | 轮询延迟0.1–5秒，HTTP另占时间 |
-| --hold | 2 | 脉冲目标时长0.1–5秒，不是server TTL |
+| --interval | 2 | 轮询延迟0.1–5秒，HTTP另占时间；低于2秒可能闪屏 |
+| --hold | 3 | 脉冲目标时长0.1–5秒，不是server TTL；低于3秒可能闪屏 |
 | --max-duration | 30 | 连续语义窗口1–300秒，不随id刷新重置 |
 | --follow-distance | 150 | 米阈值0–1000；0关闭follow策略 |
 | --one-shot | false | 窗口一次 |

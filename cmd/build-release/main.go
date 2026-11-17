@@ -5,6 +5,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"crypto/sha256"
+	"debug/buildinfo"
 	"flag"
 	"fmt"
 	"io"
@@ -60,6 +61,17 @@ func run() error {
 	if err = cmd.Run(); err != nil {
 		return err
 	}
+	notices, err := loadGoNotices(goexe, cmd.Env, *goos, *arch)
+	if err != nil {
+		return err
+	}
+	info, err := buildinfo.ReadFile(binary)
+	if err != nil {
+		return err
+	}
+	if info.GoVersion != notices.Version {
+		return fmt.Errorf("binary Go version %q differs from notice toolchain %q", info.GoVersion, notices.Version)
+	}
 	if err = os.MkdirAll(filepath.Dir(*output), 0755); err != nil {
 		return err
 	}
@@ -70,7 +82,7 @@ func run() error {
 	gz := gzip.NewWriter(file)
 	gz.Header.ModTime = time.Unix(0, 0)
 	tw := tar.NewWriter(gz)
-	files := []string{"trigger_light.sh", "carplay_light.sh", "rollback.sh", "boot-start.sh", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "docs/carplay.md", "docs/go-migration.md", "docs/design.md", "docs/testing.md", "docs/troubleshooting.md"}
+	files := []string{"trigger_light.sh", "carplay_light.sh", "rollback.sh", "boot-start.sh", "README.md", "README.en.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "docs/carplay.md", "docs/debugging.md", "docs/go-migration.md", "docs/design.md", "docs/testing.md", "docs/troubleshooting.md"}
 	add := func(name, path string, mode int64) error {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -97,6 +109,11 @@ func run() error {
 			mode = 0755
 		}
 		if err = add(name, filepath.Join(root, filepath.FromSlash(name)), mode); err != nil {
+			return err
+		}
+	}
+	for _, notice := range notices.Files {
+		if err = addNotice(tw, notice); err != nil {
 			return err
 		}
 	}
