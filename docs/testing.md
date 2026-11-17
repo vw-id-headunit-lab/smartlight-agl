@@ -17,6 +17,15 @@ reset, complete CLI polling/cleanup, cancellation and locks.
 CI records go-test-json and cross-builds static ARM64. Local outputs/hashes stay
 under ignored artifacts/dist. Cross-build is not target execution or light proof.
 
-Original Python tests remain legacy reference, not Go validation; shell cases
-require SMARTLIGHT_RUNTIME=python from a source checkout. tools/build_release.py
-builds the legacy Python package. Go package uses go run ./cmd/build-release.
+The independent manual Python suite is separate from Go validation:
+
+```sh
+python3 python-trigger/tests/test_trigger.py
+python3 python-trigger/tools/build_release.py
+sh -n python-trigger/trigger_light.sh
+sh -n python-trigger/rollback.sh
+```
+
+Its report/package stay under python-trigger/artifacts and python-trigger/dist.
+The whole directory can run without root runtime files. Duplicate Python
+CarPlay code/tests were removed; Go CarPlay is covered by the Go suite.

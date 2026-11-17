@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Legacy Python package. New Go runtime: go run ./cmd/build-release."""
+"""Build the independent manual Python trigger package; no CarPlay or Go."""
 import argparse
 import gzip
 import hashlib
@@ -11,9 +11,7 @@ import tarfile
 ROOT = Path(__file__).resolve().parents[1]
 FILES = (
     'smartlight_trigger.py', 'agl_runtime.py', 'trigger_light.sh', 'rollback.sh',
-    'carplay_monitor.py', 'carplay_light.sh', 'docs/carplay.md',
     'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
-    'docs/troubleshooting.md', 'docs/design.md', 'docs/testing.md',
     'vendor/SOURCES.json', 'vendor/LICENSE', 'vendor/urlparse.py',
     'vendor/json/__init__.py', 'vendor/json/decoder.py',
     'vendor/json/encoder.py', 'vendor/json/scanner.py',
@@ -22,7 +20,7 @@ FILES = (
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, default=ROOT / 'dist/smartlight-agl.tar.gz')
+    parser.add_argument('--output', type=Path, default=ROOT / 'dist/smartlight-python-trigger.tar.gz')
     args = parser.parse_args()
     for entry in json.loads((ROOT / 'vendor/SOURCES.json').read_text()):
         digest = hashlib.sha256((ROOT / 'vendor' / entry['path']).read_bytes()).hexdigest()
@@ -34,9 +32,9 @@ def main():
             with tarfile.open(fileobj=compressed, mode='w') as archive:
                 for name in FILES:
                     data = (ROOT / name).read_bytes()
-                    member = tarfile.TarInfo('smartlight-agl/' + name)
+                    member = tarfile.TarInfo('python-trigger/' + name)
                     member.size = len(data)
-                    member.mode = 0o644
+                    member.mode = 0o755 if name.endswith('.sh') else 0o644
                     member.mtime = 0
                     archive.addfile(member, io.BytesIO(data))
     checksum = hashlib.sha256(args.output.read_bytes()).hexdigest()

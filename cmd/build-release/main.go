@@ -70,7 +70,7 @@ func run() error {
 	gz := gzip.NewWriter(file)
 	gz.Header.ModTime = time.Unix(0, 0)
 	tw := tar.NewWriter(gz)
-	files := []string{"trigger_light.sh", "carplay_light.sh", "rollback.sh", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "docs/carplay.md", "docs/go-migration.md", "docs/design.md", "docs/testing.md", "docs/troubleshooting.md"}
+	files := []string{"trigger_light.sh", "carplay_light.sh", "rollback.sh", "boot-start.sh", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "docs/carplay.md", "docs/go-migration.md", "docs/design.md", "docs/testing.md", "docs/troubleshooting.md"}
 	add := func(name, path string, mode int64) error {
 		info, err := os.Stat(path)
 		if err != nil {

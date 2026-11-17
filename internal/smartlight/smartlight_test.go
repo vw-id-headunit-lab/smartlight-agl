@@ -30,6 +30,7 @@ type fixture struct {
 	count, navPolls                                                              int
 	noLocation, badJSON, postError, groupOff, redirect, crossRef, changedRecheck bool
 	getDrops                                                                     int
+	deleteError                                                                  bool
 	stage, unit, technology                                                      string
 	distance                                                                     any
 	direction                                                                    int
@@ -64,6 +65,11 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 		if data != nil {
 			_ = json.NewEncoder(w).Encode(Object{"status": "success", "data": data})
 		}
+	}
+	if f.deleteError && r.Method == http.MethodDelete {
+		f.writes = append(f.writes, "DELETE_FAILED "+r.URL.Path)
+		write(500, nil)
+		return
 	}
 	if r.URL.Path == "/registry/" {
 		write(200, []Object{{"name": "simplenavigation", "uri": f.server.URL + "/simplenavigation/"}})
@@ -605,7 +611,7 @@ func TestStateDirectoryLockPendingAndExclusiveState(t *testing.T) {
 		t.Fatal("duplicate lock")
 	}
 	d.Close()
-	s := &State{Kind: "smartlight-short-request-v2", Phase: "creating"}
+	s := &State{Kind: "smartlight-short-request-v2", Phase: "creating", QueueURI: "http://fixture.invalid/smartlight/queuedpurposes/owned"}
 	p := filepath.Join(dir, "carplay-pending.json")
 	if err = WriteState(p, s, true); err != nil {
 		t.Fatal(err)
@@ -617,6 +623,132 @@ func TestStateDirectoryLockPendingAndExclusiveState(t *testing.T) {
 		t.Fatal("pending state accepted")
 	}
 }
+
+func TestNavigationPostFailureContinuesAfterExactCleanup(t *testing.T) {
+	for _, mode := range []string{"http500", "bad-json", "missing-location"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t)
+			f.postError = mode == "http500"
+			f.badJSON = mode == "bad-json"
+			f.noLocation = mode == "missing-location"
+			nav, _ := NewClient(f.server.URL+"/simplenavigation/", "", "", time.Second, nil)
+			source := &NavigationSource{Client: nav, FollowMeters: 150}
+			dir, err := OpenStateDirectory(filepath.Join(t.TempDir(), "states"), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer dir.Close()
+			sink := &NavigationSink{Manager: &RequestManager{Client: f.client(t), Apply: true}, Directory: dir, Source: source}
+			event, err := source.Poll(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ok, err := sink.Start(context.Background(), event)
+			if err != nil || ok || sink.Manager.State != nil {
+				t.Fatalf("ignored failure: %v %v", ok, err)
+			}
+			if f.count != 1 {
+				t.Fatalf("POST retried: %d", f.count)
+			}
+			if mode == "missing-location" {
+				archives, _ := filepath.Glob(filepath.Join(dir.Path, "ignored-post-*.json"))
+				if len(archives) != 1 {
+					t.Fatal("uncertain evidence not preserved", archives)
+				}
+				s, err := LoadState(archives[0])
+				if err != nil || s.Phase == "cleaned" || s.QueueURI != "" {
+					t.Fatal("falsely marked clean", s, err)
+				}
+				if len(f.writes) != 1 {
+					t.Fatal("guessed delete", f.writes)
+				}
+			} else {
+				f.assertBaseline(t)
+			}
+		})
+	}
+}
+
+func TestKnownFailedPostCleanupRemainsRecoveryRequired(t *testing.T) {
+	f := newFixture(t)
+	f.postError, f.deleteError = true, true
+	var out, stderr bytes.Buffer
+	dir := filepath.Join(t.TempDir(), "states")
+	code := Run(context.Background(), []string{"carplay", "--base", f.server.URL + "/smartlight/", "--nav-base", f.server.URL + "/simplenavigation/", "--state-dir", dir, "--iterations", "1", "--apply"}, &out, &stderr)
+	if code != 78 {
+		t.Fatalf("want recovery code 78, got %d: %s", code, &out)
+	}
+	paths, _ := filepath.Glob(filepath.Join(dir, "carplay-*.json"))
+	if len(paths) != 1 {
+		t.Fatal("known cleanup identity lost", paths)
+	}
+	s, _ := LoadState(paths[0])
+	if s.QueueURI == "" || s.Phase == "cleaned" {
+		t.Fatal("known pending identity lost", s)
+	}
+	if f.count != 1 {
+		t.Fatal("failure caused new POST", f.count)
+	}
+}
+
+func TestStartupArchivesUnknownReceiptWithoutDeletingEvidence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "states")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "carplay-old.json")
+	s := &State{Kind: "smartlight-short-request-v2", Phase: "creating", RequestName: "15"}
+	if err := WriteState(p, s, true); err != nil {
+		t.Fatal(err)
+	}
+	d, err := OpenStateDirectory(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	archives, _ := filepath.Glob(filepath.Join(dir, "ignored-post-*.json"))
+	if len(archives) != 1 {
+		t.Fatal("missing archive", archives)
+	}
+	if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("active state not retired")
+	}
+	archived, err := LoadState(archives[0])
+	if err != nil || archived.RequestName != "15" || archived.Phase != "creating" {
+		t.Fatal("evidence changed", archived, err)
+	}
+}
+
+func TestSkippedPulseRespectsHoldCadence(t *testing.T) {
+	now := time.Now()
+	sink := &skippedPulseSink{}
+	c := &Controller{Sink: sink, Hold: time.Second, MaxDuration: 30 * time.Second, FollowMeters: 150, Repeat: true, Clock: func() time.Time { return now }}
+	e := &NavigationEvent{ContextURI: "c", Direction: "left", Stage: "execute"}
+	for _, advance := range []time.Duration{0, 100 * time.Millisecond, 200 * time.Millisecond} {
+		now = now.Add(advance)
+		if err := c.Step(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sink.count != 1 {
+		t.Fatal("hammered skipped request", sink.count)
+	}
+	now = now.Add(time.Second)
+	if err := c.Step(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if sink.count != 2 {
+		t.Fatal("missing paced retry", sink.count)
+	}
+}
+
+type skippedPulseSink struct{ count int }
+
+func (s *skippedPulseSink) Start(context.Context, *NavigationEvent) (bool, error) {
+	s.count++
+	return false, nil
+}
+func (s *skippedPulseSink) Stop(context.Context) error { return nil }
 
 func TestCLIArgumentValidation(t *testing.T) {
 	for _, args := range [][]string{{"trigger", "--base", "http://fixture/", "--direction", "left", "--purpose", "x"}, {"carplay", "--base", "http://fixture/"}, {"carplay", "--base", "http://fixture/", "--nav-base", "http://nav/", "--nav-registry", "http://registry/"}, {"trigger", "--base", "http://fixture/", "--direction", "left", "--hold", "NaN"}, {"cleanup"}} {

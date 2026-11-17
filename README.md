@@ -22,9 +22,10 @@ go run ./cmd/build-release
 ```
 
 默认输出dist/smartlight-agl-go-linux-arm64.tar.gz及sha256。
-解包后smartlight-agl、trigger_light.sh、carplay_light.sh、rollback.sh保持同级。
-目标不需要Go编译器。源码保留Python/vendor作显式回退，默认Go包不含它们，
-见[迁移说明](docs/go-migration.md)。
+解包后smartlight-agl、trigger_light.sh、carplay_light.sh、rollback.sh及可选boot-start.sh保持同级。
+目标不需要Go编译器。根目录三个启动器仅调用Go。
+Python手动触发工具独立保存在[python-trigger/](python-trigger/README.md)，
+不含CarPlay实现，也不装进Go运行包；两套工具无需相互依赖。
 
 ## 服务地址
 
@@ -54,6 +55,20 @@ sh trigger_light.sh trigger --base "$BASE" --direction 左转 --apply
 
 实时purposes唯一匹配navigation/direction/left或right。POST是实际purpose.name与相对路径，
 不写死14/15或UUID。hold为0.1–5秒，是客户端目标时长，不是服务器TTL。
+
+### 独立 Python 触发工具
+
+需要精简Python 2.7/3 + curl版本时，可单独复制`python-trigger/`目录。
+它只保留手动灯效和清理，不包含重复的CarPlay监控：
+
+```sh
+sh python-trigger/trigger_light.sh list --base "$BASE"
+sh python-trigger/trigger_light.sh trigger --base "$BASE" --direction left --hold 2 --apply
+sh python-trigger/rollback.sh --state /tmp/日志中的实际状态.json
+```
+
+完整参数、测试及独立打包见[Python触发说明](python-trigger/README.md)。
+不再用`SMARTLIGHT_RUNTIME=python`切换根目录启动器。
 
 ## CarPlay联动
 
@@ -112,6 +127,11 @@ sh rollback.sh --state /tmp/日志中的实际状态.json
 兼容Python v1/v2状态；未知身份保留，不按公共名称删项，confirm-absent不绕过v2身份。
 CarPlay目录锁和未完成状态会阻止重复apply；不自动抢占遗留锁。
 
+CarPlay合入main的连续运行策略：一次失败POST在准确清理成功后可忽略；无Location时
+归档`ignored-post-*.json`保留证据并继续，不能据此认定未入队。有Location但清理失败
+仍保留状态并返回78。可选`boot-start.sh`显式运行时会创建systemd服务并启用`--apply`，
+不是预演命令；恢复错误78会停止自动重启。详见[失败恢复与开机启动](docs/carplay.md)。
+
 ## 验证
 
 ```sh
@@ -126,5 +146,5 @@ go run ./cmd/build-release
 
 ## 许可
 
-项目沿用[MIT](LICENSE)；未修改的Python vendor来源与许可见[第三方声明](THIRD_PARTY_NOTICES.md)。
-Go运行包不依赖vendor。
+项目沿用[MIT](LICENSE)；Python解析模块位于`python-trigger/vendor/`，来源与许可见
+[第三方声明](THIRD_PARTY_NOTICES.md)。Go运行包不依赖这些模块。

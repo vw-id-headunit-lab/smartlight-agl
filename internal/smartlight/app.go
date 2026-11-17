@@ -168,6 +168,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if err = execute(ctx, o, log); err != nil {
 		log("error", Object{"error": err.Error()})
+		var recovery *RecoveryRequired
+		if errors.As(err, &recovery) {
+			return 78
+		}
 		if errors.Is(err, context.Canceled) {
 			return 130
 		}

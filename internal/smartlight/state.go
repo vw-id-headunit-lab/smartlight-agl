@@ -32,6 +32,20 @@ type State struct {
 	HTTPStatus  int      `json:"http_status,omitempty"`
 }
 
+// RecoveryRequired marks a known request whose ownership/cleanup needs an
+// operator, not a supervisor restart loop. Mirrors boot unit exit policy 78.
+type RecoveryRequired struct{ Err error }
+
+func (e *RecoveryRequired) Error() string { return e.Err.Error() }
+func (e *RecoveryRequired) Unwrap() error { return e.Err }
+
+// PostFailure distinguishes an attempted POST from a preflight/source failure.
+// Only the navigation monitor can downgrade this into an ignored pulse.
+type PostFailure struct{ Err error }
+
+func (e *PostFailure) Error() string { return e.Err.Error() }
+func (e *PostFailure) Unwrap() error { return e.Err }
+
 func RandomID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -412,10 +426,10 @@ func (m *RequestManager) Start(ctx context.Context, sel Selector, path string) (
 	defer cancel()
 	_, err = m.Client.Request(postCtx, http.MethodPost, m.Client.Resource("queuedpurposes"), Object{"name": name, "purpose": p.EscapedPath()}, false, hook)
 	if err != nil {
-		return false, err
+		return false, &PostFailure{Err: err}
 	}
 	if s.QueueURI == "" {
-		return false, errors.New("POST has no Location; retain state and stop")
+		return false, &PostFailure{Err: errors.New("POST has no Location; retain request evidence")}
 	}
 	if ctx.Err() != nil {
 		return false, ctx.Err()
@@ -437,7 +451,7 @@ func (m *RequestManager) Stop(ctx context.Context) error {
 	}
 	if err := Cleanup(ctx, m.Client, m.State, m.Path, false); err != nil {
 		m.Client.Log("cleanup_pending", Object{"state": m.Path})
-		return err
+		return &RecoveryRequired{Err: err}
 	}
 	m.State = nil
 	m.Path = ""

@@ -14,9 +14,20 @@
   far/inactive/noneligible/direction/context change ends continuous turn.
 - cleanup_pending: retain state, use cleanup with original service/prefix/auth.
   No Location after uncertain POST means no name-based delete, no POST retry.
+- carplay_post_ignored: the monitor skipped one failed pulse and continues at
+  normal hold cadence after exact cleanup or no-Location evidence archival.
+  ignored-post-*.json retains an uncertain receipt; it is not proof of absence.
+- Exit78: known cleanup ownership remains pending. The optional boot service
+  deliberately stops restart loops until its state is recovered.
 - Stale lock: verify stopped process, clean unfinished states, then manually
   remove empty carplay-monitor.lock. No second-directory workaround.
 - Hold is client timing, not serverTTL. Power loss/SIGKILL/failed network needs
   independent recovery. Local player state is not proof of visible light.
 
-See go-migration.md for explicit Python fallback and compatible state recovery.
+For the independent manual Python tool, use python-trigger/trigger_light.sh and
+python-trigger/rollback.sh; root launchers are Go-only. State recovery remains
+compatible across tools. See go-migration.md and ../python-trigger/README.md.
+
+boot-start.sh writes/starts a runtime systemd unit with --apply; it is opt-in,
+not a probe. Do not run it merely to check installation. See carplay.md for
+the exact service name, log path, stop command and recovery boundaries.

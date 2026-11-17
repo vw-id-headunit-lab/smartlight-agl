@@ -7,6 +7,10 @@ venv/
 # Generated test reports, packages and local deployment records
 /artifacts/
 /dist/
+/python-trigger/artifacts/
+/python-trigger/dist/
+/python-trigger/smartlight-*.json
+/python-trigger/light-*.json
 /smartlight-agl
 /smartlight-agl.exe
 /evidence/

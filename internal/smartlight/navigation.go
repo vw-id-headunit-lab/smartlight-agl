@@ -241,6 +241,23 @@ func (s *NavigationSource) StillCurrent(ctx context.Context, previous *Navigatio
 
 type StateDirectory struct{ Path, Lock string }
 
+// Preserve uncertain POST evidence without keeping the monitor startup blocked.
+// No Location means no DELETE identity; archive rather than pretending cleanup.
+func archiveIgnoredPost(path string, state *State) (string, error) {
+	id, err := RandomID()
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(filepath.Dir(path), "ignored-post-"+id+".json")
+	if err = WriteState(target, state, true); err != nil {
+		return "", err
+	}
+	if err = os.Remove(path); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
 func OpenStateDirectory(path string, apply bool) (*StateDirectory, error) {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return nil, err
@@ -264,10 +281,16 @@ func OpenStateDirectory(path string, apply bool) (*StateDirectory, error) {
 	}
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), "carplay-") && strings.HasSuffix(entry.Name(), ".json") {
-			s, err := LoadState(filepath.Join(path, entry.Name()))
+			statePath := filepath.Join(path, entry.Name())
+			s, err := LoadState(statePath)
 			if err != nil || s.Phase != "cleaned" {
+				if err == nil && s.Kind == "smartlight-short-request-v2" && s.QueueURI == "" && contains([]string{"creating", "posted", "rejected"}, s.Phase) {
+					if _, archiveErr := archiveIgnoredPost(statePath, s); archiveErr == nil {
+						continue
+					}
+				}
 				d.Close()
-				return nil, errors.New("pending state exists; run cleanup before apply")
+				return nil, &RecoveryRequired{Err: errors.New("pending state exists; run cleanup before apply")}
 			}
 		}
 	}
@@ -301,7 +324,34 @@ func (s *NavigationSink) Start(ctx context.Context, event *NavigationEvent) (boo
 		return false, err
 	}
 	s.Manager.BeforePost = func(ctx context.Context) (bool, error) { return s.Source.StillCurrent(ctx, event) }
-	return s.Manager.Start(ctx, Selector{Direction: event.Direction}, filepath.Join(s.Directory.Path, "carplay-"+id+".json"))
+	ok, err := s.Manager.Start(ctx, Selector{Direction: event.Direction}, filepath.Join(s.Directory.Path, "carplay-"+id+".json"))
+	var postErr *PostFailure
+	if !errors.As(err, &postErr) {
+		return ok, err
+	}
+	m := s.Manager
+	status := m.State.HTTPStatus
+	var archived string
+	if m.State.QueueURI != "" {
+		// Do not inherit a canceled source context into a known-item revoke.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err = m.Stop(cleanupCtx)
+		cancel()
+		if err != nil {
+			return false, err // Preserve known identity and return recovery exit 78.
+		}
+	} else {
+		archived, err = archiveIgnoredPost(m.Path, m.State)
+		if err != nil {
+			return false, &RecoveryRequired{Err: fmt.Errorf("archive failed POST evidence: %w", err)}
+		}
+		m.State, m.Path = nil, ""
+	}
+	m.Client.Log("carplay_post_ignored", Object{"direction": event.Direction, "http_status": status, "error": postErr.Error(), "evidence": archived})
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	return false, nil
 }
 func (s *NavigationSink) Stop(ctx context.Context) error { return s.Manager.Stop(ctx) }
 
@@ -364,13 +414,12 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 		c.Started = now
 	}
 	c.Fired = true
-	ok, err := c.Sink.Start(ctx, event)
+	_, err := c.Sink.Start(ctx, event)
 	if err != nil {
 		return err
 	}
-	if ok {
-		c.Until = c.Clock().Add(c.Hold)
-	}
+	// Failed/ignored/skipped attempts wait the normal cadence too.
+	c.Until = c.Clock().Add(c.Hold)
 	return nil
 }
 

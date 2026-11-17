@@ -7,8 +7,8 @@
 
 | 原Python命令 | Go命令 |
 |---|---|
-| smartlight_trigger.py list/probe/trigger/cleanup | smartlight-agl list/probe/trigger/cleanup |
-| carplay_monitor.py | smartlight-agl carplay |
+| python-trigger/smartlight_trigger.py list/probe/trigger/cleanup | smartlight-agl list/probe/trigger/cleanup |
+| 已移除的 Python CarPlay monitor | smartlight-agl carplay |
 
 三个shell启动器默认调用同目录Go二进制。`SMARTLIGHT_BIN`可指定其它可执行文件。
 flags放在子命令后；默认只读，--apply才创建请求。开发机运行：
@@ -21,17 +21,25 @@ go run ./cmd/build-release
 
 输出dist/smartlight-agl-go-linux-arm64.tar.gz与sha256。包只含静态二进制、启动器、
 文档和许可，权限/时间戳固定；不含凭据、状态、固件、Python/vendor、本地报告。
-tools/build_release.py保留为旧Python包构建路线，不是Go包。
+`python-trigger/tools/build_release.py`仅构建独立Python手动触发包，不是Go包。
 
-源码的Python及vendor原件未修改，保留显式回退，不装进Go-only包：
+## 独立手动触发目录
+
+删除重复的Python CarPlay实现及其测试，根目录三个启动器只使用Go。
+Python仅保留手动list/probe/trigger/cleanup，并连同解析器、许可和测试移入
+`python-trigger/`。该目录可独立复制，不需要Go或根目录文件：
 
 ```sh
-# 源码目录里有Python/vendor时才适用
-SMARTLIGHT_RUNTIME=python sh trigger_light.sh list --base "$BASE"
-SMARTLIGHT_RUNTIME=python sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY"
+sh python-trigger/trigger_light.sh list --base "$BASE"
+sh python-trigger/trigger_light.sh trigger --base "$BASE" --direction left --hold 2 --apply
+sh python-trigger/rollback.sh --state /tmp/实际状态.json
+python3 python-trigger/tests/test_trigger.py
+python3 python-trigger/tools/build_release.py
 ```
 
-回退前先停监控并清理状态。旧Python保留原行为，回退不等于修复旧单位/窗口缺陷。
+不再支持通过`SMARTLIGHT_RUNTIME=python`选择根目录脚本的运行时。
+独立Python包不含CarPlay，输出`python-trigger/dist/smartlight-python-trigger.tar.gz`；
+用法见[Python触发工具](../python-trigger/README.md)。切换工具前先停监控并清理状态。
 
 ## 请求与状态保持
 
@@ -73,4 +81,12 @@ Go tests仅访问本地httptest：默认预演、POST真实name/相对purpose、
 GET重试/无重定向、registry独立凭据、距离非法值、id刷新窗口、one-shot、完整CLI、
 取消后恢复和锁。Linux CI另跑race并记录go-test-json。ARM64交叉编译不是目标执行。
 
-原Python测试属于legacy参考；其shell测试需SMARTLIGHT_RUNTIME=python，不验证Go。
+独立Python手动触发测试不验证Go，Go CarPlay只由Go测试覆盖。
+
+## 合并 main 1e1941b 的决策
+
+保留Go-only CarPlay与独立Python触发目录，不复活已删除的Python监控/测试。
+保留main新增boot-start.sh并放入Go包；它的78退出/停止重启约定由Go实现。
+Go监控对单次POST失败按hold节奏继续，未知Location原意图改为归档证据，不无声删除。
+若已有有效Location但清理失败，保留身份并退出78，不采用旧Python忘记已知请求的策略。
+手动触发器行为不变；上游Python失败策略不会移动到python-trigger手动工具里。

@@ -22,6 +22,7 @@ jobs:
           sh -n trigger_light.sh
           sh -n carplay_light.sh
           sh -n rollback.sh
+          sh -n boot-start.sh
       - name: Tests and vet
         run: |
           mkdir -p artifacts
@@ -38,4 +39,28 @@ jobs:
           path: |
             artifacts/
             dist/
+          if-no-files-found: ignore
+
+  python-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Standalone manual trigger regression
+        run: |
+          sh -n python-trigger/trigger_light.sh
+          sh -n python-trigger/rollback.sh
+          python python-trigger/tests/test_trigger.py
+      - name: Standalone Python package
+        run: python python-trigger/tools/build_release.py
+      - name: Keep Python trigger report/package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartlight-python-trigger
+          path: |
+            python-trigger/artifacts/
+            python-trigger/dist/
           if-no-files-found: ignore

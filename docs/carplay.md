@@ -57,6 +57,36 @@ Ctrl-C/SIGTERM停止来源读取；有界POST先存Location，独立cleanup cont
 sh rollback.sh --state /tmp/日志给出的实际状态.json
 ```
 
-缺Location保留pending，不按公共名称删项。已有状态/锁拒绝apply；确认旧进程结束、
-恢复状态后手动移除空carplay-monitor.lock，不用另一目录重复运行。
+### 请求失败与持续运行
+
+CarPlay的一次POST失败不再直接结束整场监控。若返回有效Location，先按准确URI
+清理，清理成功后记录`carplay_post_ignored`并等待正常`--hold`节奏。
+没有Location时不猜删除目标，将原意图保存为同目录`ignored-post-随机值.json`，
+保留未知结果证据后继续监控；这不表示服务端已拒绝或队列已清空。
+旧版本无Location的待处理状态在启动时同样归档，日志/证据供后续核对。
+
+有Location但清理失败的请求仍保留原状态，退出码为**78**，不继续制造新请求。
+这比旧Python main“清理失败也忘记身份”的策略更保守：保留可恢复的身份，避免遗留灯效项。
+手动Go/Python触发与独立rollback继续保持原恢复规则，未知身份仍不会按名称删除。
+HTTP层POST/DELETE没有重试，连续监控的后续脉冲会重新检查来源及现有队列。
+
+已有明确未完成请求/锁会拒绝apply；确认旧进程结束、恢复状态后手动移除空
+carplay-monitor.lock，不用另一目录重复运行。
+
+### 可选开机启动
+
+合入main的`boot-start.sh`用于现有`/lge/app_rw/ssh/boot-hook.sh`在后台调用。
+它通过systemd运行独立Go监控服务，不依附SSH会话；**仅解压/执行help不会安装服务**。
+确认Go二进制与脚本齐备并完成静止预演后，才手动运行：
+
+```sh
+sh boot-start.sh
+```
+
+脚本使用当前文档HOST和本机registry，自动加`--apply`，写入
+`/run/systemd/system/smartlight-carplay.service`并调用systemctl启动；普通失败5秒后重启，
+恢复错误78停止重启，`TimeoutStopSec=45s`。启动日志为同目录`carplay-light.log`。
+不需要开机联动时不要调用该脚本；停用用`systemctl stop smartlight-carplay.service`，
+然后按状态清理。此轮只做shell语法/打包检查，未操作实机systemd或boot hook。
+
 本轮Go仅本地模拟，未实车点灯。[迁移与回退](go-migration.md)。
