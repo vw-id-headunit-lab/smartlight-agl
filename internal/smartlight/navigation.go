@@ -96,6 +96,15 @@ func (e *NavigationEvent) Eligible(followMeters float64) bool {
 type NavigationSource struct {
 	Client       *Client
 	FollowMeters float64
+	Adaptive     *AdaptiveFollow
+}
+
+func (s *NavigationSource) followMeters() float64 {
+	if s.Adaptive != nil {
+		meters, _ := s.Adaptive.Current()
+		return meters
+	}
+	return s.FollowMeters
 }
 
 func activeContext(row Object) bool {
@@ -150,6 +159,11 @@ func (s *NavigationSource) readElement(ctx context.Context, uri, resource string
 }
 
 func (s *NavigationSource) Poll(ctx context.Context) (*NavigationEvent, error) {
+	if s.Adaptive != nil {
+		if err := s.Adaptive.Refresh(ctx); err != nil {
+			return nil, err
+		}
+	}
 	rows, err := s.Client.Collection(ctx, "drivingContexts")
 	if err != nil {
 		return nil, err
@@ -210,6 +224,11 @@ func (s *NavigationSource) Poll(ctx context.Context) (*NavigationEvent, error) {
 // StillCurrent revalidates semantic direction/proximity, allowing a refreshed
 // element id for the same turn but never trusting a different origin/resource.
 func (s *NavigationSource) StillCurrent(ctx context.Context, previous *NavigationEvent) (bool, error) {
+	if s.Adaptive != nil {
+		if err := s.Adaptive.Refresh(ctx); err != nil {
+			return false, err
+		}
+	}
 	row, err := s.readElement(ctx, previous.ContextURI, "drivingContexts")
 	if err != nil {
 		return false, err
@@ -239,7 +258,7 @@ func (s *NavigationSource) StillCurrent(ctx context.Context, previous *Navigatio
 	if err != nil {
 		return false, err
 	}
-	if event.Direction != previous.Direction || !event.Eligible(s.FollowMeters) {
+	if event.Direction != previous.Direction || !event.Eligible(s.followMeters()) {
 		return false, nil
 	}
 	// Navigation can stop or switch its reference while the maneuver is being
@@ -262,7 +281,7 @@ func (s *NavigationSource) StillCurrent(ctx context.Context, previous *Navigatio
 	if err != nil {
 		return false, err
 	}
-	return confirmedURI == uri, nil
+	return confirmedURI == uri && event.Eligible(s.followMeters()), nil
 }
 
 // Empty references are normal while a route is stopping or being recalculated.
@@ -413,6 +432,16 @@ type Controller struct {
 	Until, Started     time.Time
 	Context, Direction string
 	Fired              bool
+	Adaptive           *AdaptiveFollow
+	WindowFollowMeters float64
+}
+
+func (c *Controller) followMeters() float64 {
+	if c.Adaptive != nil {
+		meters, _ := c.Adaptive.Current()
+		return meters
+	}
+	return c.FollowMeters
 }
 
 func (c *Controller) Expire(ctx context.Context) error {
@@ -448,14 +477,22 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 			return err
 		}
 	}
-	if !event.Eligible(c.FollowMeters) {
+	limit := c.followMeters()
+	if !event.Eligible(limit) {
 		if err := c.Expire(ctx); err != nil {
 			return err
+		}
+		// Slowing down, an expired speed sample, or a read failure can reduce
+		// the threshold. Stop the pulse, but do not rearm the same turn's
+		// one-shot/max-duration budget solely because speed crossed a boundary.
+		if c.Adaptive != nil && !c.Started.IsZero() && event != nil && event.ContextURI == c.Context && event.Direction == c.Direction && event.Stage == "follow" && event.Distance != nil && *event.Distance <= c.WindowFollowMeters {
+			return nil
 		}
 		c.Context = ""
 		c.Direction = ""
 		c.Started = time.Time{}
 		c.Fired = false
+		c.WindowFollowMeters = 0
 		return nil
 	}
 	// Window follows the semantic turn. Refreshed id/raw direction variants do
@@ -468,6 +505,10 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 		c.Direction = event.Direction
 		c.Started = time.Time{}
 		c.Fired = false
+		c.WindowFollowMeters = 0
+	}
+	if limit > c.WindowFollowMeters {
+		c.WindowFollowMeters = limit
 	}
 	// Revoking an old pulse can take time; do not use the pre-cleanup clock
 	// reading when deciding whether a new request still fits in the window.
@@ -560,6 +601,11 @@ func RunMonitor(ctx context.Context, source *NavigationSource, controller *Contr
 				return e
 			}
 			fields := Object{"active": event != nil}
+			if source.Adaptive != nil {
+				for key, value := range source.Adaptive.Fields() {
+					fields[key] = value
+				}
+			}
 			if event != nil {
 				fields["stage"] = event.Stage
 				fields["direction"] = event.Direction

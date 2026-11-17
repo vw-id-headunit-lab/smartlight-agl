@@ -54,6 +54,8 @@ BASE="$HOST/smartlight/"
 REGISTRY='http://[::1]:80'
 
 # Values below --interval 2 or --hold 3 may cause display flicker.
+# Adaptive follow is on by default; add --adaptive-follow=false to disable it.
+# If VIWI speed discovery fails, follow-distance falls back to 150 meters.
 exec /bin/sh "$SMARTLIGHT_BOOT_DIR/carplay_light.sh" \
     --base "$BASE" --nav-registry "$REGISTRY" \
     --apply --interval 2 --hold 3 --timeout 5 --state-dir /tmp/smartlight-carplay

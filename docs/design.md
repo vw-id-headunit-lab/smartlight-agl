@@ -49,3 +49,13 @@ refresh before this recheck is allowed, but a change during its reads is not.
 The independent manual Python tool lives in python-trigger/ with its parsers,
 licenses, tests and package builder. Root launchers and CarPlay are Go-only;
 Go packages need none of the Python files. See go-migration.md for layout.
+
+Speed adaptation is enabled by default but can be disabled with
+`--adaptive-follow=false`. A read-only VIWI tree discovers Displayspeed links on
+the configured origin, or an explicit speed URI bypasses discovery. Only the
+unambiguous velocityPrimary.currentValue is accepted, with response/configured
+units normalized to km/h. The default formula is speed/3.6*12s, clamped 50..500m;
+invalid/unavailable/stale samples fall back to the fixed follow-distance. Reads
+are rate-limited and bounded by both a speed budget and active pulse deadlines.
+No speed credentials inherit from navigation or lighting. Speed-only threshold
+changes revoke ineligible pulses without rearming the same turn's window budget.

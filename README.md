@@ -122,7 +122,8 @@ sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
 
 ### 默认什么时候提示
 
-- `execute` 阶段，或 `follow` 且合法剩余距离不超过 **150 米**。
+- `execute` 阶段，或 `follow` 且合法剩余距离不超过当前阈值。
+- **默认启用车速自适应**：`距离 = 时速(km/h) ÷ 3.6 × 12秒`，限制在 **50–500 米**；车速不可用时回退 **150 米**。
 - 距离单位 `m/km/mi/yd/ft` 会换算到米；直行、未知方向及不合法距离不会猜测为转向。
 - 每个脉冲目标保持 3 秒，先撤销旧请求；仍符合条件时可重新请求。
 - 连续同一转向窗口最多 30 秒，机动元素 ID 刷新不会重置上限。
@@ -138,11 +139,62 @@ sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
 | `--interval` | `2` 秒 | 两轮读取的等待时间，HTTP 请求本身另占时间；低于 2 秒可能闪屏 |
 | `--hold` | `3` 秒 | 单个灯效请求的目标保持时长，范围 0.1–5 秒；低于 3 秒可能闪屏 |
 | `--max-duration` | `30` 秒 | 连续语义转向窗口上限，范围 1–300 秒 |
-| `--follow-distance` | `150` 米 | follow 接近触发阈值；设为 0 只接受 execute |
+| `--follow-distance` | `150` 米 | 车速不可用时的回退阈值；关闭自适应时为固定阈值；0 只接受 execute |
+| `--adaptive-follow` | 开启 | 按车速调整 follow 阈值；`--adaptive-follow=false` 关闭 |
 | `--one-shot` | 关闭 | 每个语义转向窗口只播放一个脉冲，不重复请求 |
 | `--timeout` | `2` 秒 | 每个 HTTP 请求的超时；GET 传输失败最多尝试 3 次 |
 | `--iterations` | `0` | 0 持续运行，正整数为读取轮数 |
 | `--state-dir` | 临时目录下的 `smartlight-carplay` | 本次请求身份和监控锁目录 |
+
+### 默认车速自适应
+
+| 当前时速 | 默认 follow 阈值 |
+|---|---|
+| 0–15 km/h | 50 米（下限） |
+| 30 km/h | 100 米 |
+| 60 km/h | 200 米 |
+| 90 km/h | 300 米 |
+| 120 km/h | 400 米 |
+| ≥150 km/h | 500 米（上限） |
+
+这是项目可调策略，不是原厂参数，也不识别道路类型；同样时速采用同样阈值。
+默认只读发现入口是 `http://[fd53:7cb8:383:3::99]:8080/`，沿服务返回的 URI
+查找 `Displayspeed` 下 `type=velocityPrimary` 的 `currentValue`，不猜测资源名/UUID。
+`--speed-unit auto` 只接受响应明确提供的 `unit=km/h|mph|m/s`；缺少单位则回退，
+经实车只读确认后可显式指定单位。入口可达性和真实响应格式仍需实车核对。
+
+已确认速度 URI 和单位时，推荐跳过发现，先只读预演：
+
+```sh
+SPEED_URI='http://[fd53:7cb8:383:3::99]:8080/实际返回的速度资源URI'
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --speed-uri "$SPEED_URI" --speed-unit km/h --iterations 10
+```
+
+示例 `km/h` 须与真实 `currentValue` 单位一致；也支持 `mph`、`m/s`。
+速度凭据独立使用 `--speed-auth-file`，不继承灯效/导航凭据。日志 `adaptive_follow` 和
+`carplay_snapshot` 中的 `speed_available`、`speed_kph`、`follow_distance_m` 显示当前决策。
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| `--speed-base` | 上述 `::99:8080` 入口 | 没有 `--speed-uri` 时使用的服务树 |
+| `--speed-unit` | `auto` | 从响应读取单位，或显式指定已确认单位 |
+| `--follow-lead-time` | 12 秒 | 以当前速度预计的提前时间，范围 1–30 秒 |
+| `--follow-min-distance` / `--follow-max-distance` | 50 / 500 米 | 自适应上下限，范围 1–1000 米 |
+| `--speed-interval` | 2 秒 | 一次读取完成到下次读取的最短间隔，至少 1 秒 |
+| `--speed-timeout` | 1 秒 | 一轮车速读取/发现的总预算，含 GET 重试 |
+| `--speed-max-age` | 5 秒 | 本地成功接收样本的有效期；至少 interval+timeout |
+
+读取失败即丢弃旧速度并回退；不会无限沿用高速值。有效期按本地接收时间计算，
+**不证明上游传感器仍在更新**。车速变化只调整 follow，不改变 execute、3 秒保持和
+30 秒总窗口；阈值下降会撤销不再符合条件的脉冲，但不会仅因车速波动重新计算同转向预算。
+
+关闭自适应并使用固定 150 米（关闭后不请求车速服务）：
+
+```sh
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --adaptive-follow=false --follow-distance 150 --iterations 10
+```
 
 例如，只在 execute 阶段提示且每个窗口只发一次：
 

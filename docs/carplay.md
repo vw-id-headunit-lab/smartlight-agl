@@ -26,7 +26,9 @@ POST前重读当前机动，核对同上下文active、派生方向相同且elig
 S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=left/right；
 16/27=left，15/26=right；其它组合不触发。实时查用途，不以14/15当URI。
 
-默认execute或follow且距离≤150米。单位m/km/mi/yd/ft归一化；拒绝bool/负/非有限/字符串/
+默认execute或follow且距离≤当前阈值。默认车速自适应为speed(km/h)/3.6×12秒，
+限幅50–500米；车速未知回退150米。`--adaptive-follow=false`关闭自适应且不读取速度。
+`--follow-distance 0`保持仅execute并跳过车速读取。单位m/km/mi/yd/ft归一化；拒绝bool/负/非有限/字符串/
 未知单位。hold到期先DELETE，仍eligible可再次POST；连续上下文+左右方向窗口不因id刷新
 重置。far/inactive/prepare/instruction或换来源/方向结束窗口；未观测到边界的同向转弯
 继续共享窗口。--one-shot选窗口一次；--follow-distance 0仅execute。
@@ -41,7 +43,8 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 | --interval | 2 | 轮询延迟0.1–5秒，HTTP另占时间；低于2秒可能闪屏 |
 | --hold | 3 | 脉冲目标时长0.1–5秒，不是server TTL；低于3秒可能闪屏 |
 | --max-duration | 30 | 连续语义窗口1–300秒，不随id刷新重置 |
-| --follow-distance | 150 | 米阈值0–1000；0关闭follow策略 |
+| --follow-distance | 150 | 固定/车速失败回退米阈值0–1000；0关闭follow策略 |
+| --adaptive-follow | true | 车速自适应；显式false关闭 |
 | --one-shot | false | 窗口一次 |
 | --timeout | 2 | 每请求0.1–15秒；GET运输最多3次 |
 | --iterations | 0 | 0持续，正数有界 |
@@ -57,6 +60,10 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 ```
 
 三侧凭据不继承、不入日志状态。prefix mapping用advertised-base/nav-advertised-base。
+车速为独立GET数据源，默认从`http://[fd53:7cb8:383:3::99]:8080/`发现Displayspeed；
+实际URI、速度单位和网络可达性仍需只读确认。可用`--speed-uri`指定确认后的集合/元素，
+`--speed-unit auto`要求返回unit，或显式传已确认的km/h、mph、m/s；独立凭据用speed-auth-file。
+失败/过期回退固定距离，阈值波动不会重置同转向窗口预算。完整参数见README双语教程。
 代理访问前缀只用于HTTP请求地址；POST的purpose引用使用服务端路径，状态及清理保留访问路径。
 Ctrl-C/SIGTERM停止来源读取；有界POST先存Location，独立cleanup context撤销本桥项。
 慢GET受脉冲deadline限制；断电、SIGKILL、失联仍需独立恢复：

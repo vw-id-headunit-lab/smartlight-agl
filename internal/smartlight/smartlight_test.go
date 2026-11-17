@@ -595,7 +595,7 @@ func TestCarplayCLIEndToEndAndRollback(t *testing.T) {
 	f.configure(func(f *fixture) { f.stopAt = 3 })
 	dir := filepath.Join(t.TempDir(), "state")
 	var out, stderr bytes.Buffer
-	code := Run(context.Background(), []string{"carplay", "--base", f.server.URL + "/smartlight/", "--nav-registry", f.server.URL + "/registry/", "--state-dir", dir, "--interval", "0.1", "--hold", "0.1", "--iterations", "3", "--apply", "--one-shot"}, &out, &stderr)
+	code := Run(context.Background(), []string{"carplay", "--adaptive-follow=false", "--base", f.server.URL + "/smartlight/", "--nav-registry", f.server.URL + "/registry/", "--state-dir", dir, "--interval", "0.1", "--hold", "0.1", "--iterations", "3", "--apply", "--one-shot"}, &out, &stderr)
 	if code != 0 {
 		t.Fatalf("code %d %s %s", code, &out, &stderr)
 	}
@@ -712,7 +712,7 @@ func TestKnownFailedPostCleanupRemainsRecoveryRequired(t *testing.T) {
 	f.configure(func(f *fixture) { f.postError, f.deleteError = true, true })
 	var out, stderr bytes.Buffer
 	dir := filepath.Join(t.TempDir(), "states")
-	code := Run(context.Background(), []string{"carplay", "--base", f.server.URL + "/smartlight/", "--nav-base", f.server.URL + "/simplenavigation/", "--state-dir", dir, "--iterations", "1", "--apply"}, &out, &stderr)
+	code := Run(context.Background(), []string{"carplay", "--adaptive-follow=false", "--base", f.server.URL + "/smartlight/", "--nav-base", f.server.URL + "/simplenavigation/", "--state-dir", dir, "--iterations", "1", "--apply"}, &out, &stderr)
 	if code != 78 {
 		t.Fatalf("want recovery code 78, got %d: %s", code, &out)
 	}

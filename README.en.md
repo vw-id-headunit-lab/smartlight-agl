@@ -127,7 +127,8 @@ are not hard-coded.
 
 ### Default trigger policy
 
-- Trigger during `execute`, or during `follow` with a valid remaining distance of **150 meters or less**.
+- Trigger during `execute`, or during `follow` with a valid remaining distance at or below the current threshold.
+- **Speed adaptation is enabled by default**: `distance = speed(km/h) / 3.6 * 12 seconds`, clamped to **50–500 meters**; unavailable speed falls back to **150 meters**.
 - Normalize `m/km/mi/yd/ft`. Do not guess turns from straight/unknown directions or invalid distances.
 - Each pulse has a three-second target hold. Revoke the old request before creating another eligible pulse.
 - Limit a continuous semantic turn window to 30 seconds; refreshed element IDs do not reset it.
@@ -143,11 +144,67 @@ These are current S2995 platform semantics, not universal vehicle or CarPlay val
 | `--interval` | `2` seconds | Delay between polling rounds; HTTP requests take additional time; below 2 may cause flicker |
 | `--hold` | `3` seconds | Target hold for an individual request, range 0.1–5 seconds; below 3 may cause flicker |
 | `--max-duration` | `30` seconds | Continuous semantic turn window, range 1–300 seconds |
-| `--follow-distance` | `150` meters | Follow-stage threshold; zero permits only execute |
+| `--follow-distance` | `150` meters | Fallback when speed is unavailable, or fixed threshold when adaptation is disabled; zero permits only execute |
+| `--adaptive-follow` | On | Adjust follow distance by speed; `--adaptive-follow=false` disables it |
 | `--one-shot` | Off | One pulse per semantic turn window instead of repeating |
 | `--timeout` | `2` seconds | Per-request timeout; GET transport failures get at most three attempts |
 | `--iterations` | `0` | Zero runs continuously; a positive integer bounds polling rounds |
 | `--state-dir` | Temporary directory + `smartlight-carplay` | Request ownership records and monitor lock |
+
+### Default speed adaptation
+
+| Current speed | Default follow threshold |
+|---|---|
+| 0–15 km/h | 50 meters (minimum) |
+| 30 km/h | 100 meters |
+| 60 km/h | 200 meters |
+| 90 km/h | 300 meters |
+| 120 km/h | 400 meters |
+| ≥150 km/h | 500 meters (maximum) |
+
+This is a tunable project policy, not an OEM rule or road-type detector. The same
+speed produces the same threshold regardless of road classification.
+The default read-only discovery entry is `http://[fd53:7cb8:383:3::99]:8080/`.
+It follows returned URIs under `Displayspeed` and selects `type=velocityPrimary` /
+`currentValue`, without guessing resource names or UUIDs. `--speed-unit auto`
+requires an explicit response `unit=km/h|mph|m/s`; missing units cause fallback.
+Endpoint reachability and real response formats still require vehicle checks.
+
+With a confirmed speed URI and unit, skip discovery and dry-run first:
+
+```sh
+SPEED_URI='http://[fd53:7cb8:383:3::99]:8080/ACTUAL_RETURNED_SPEED_RESOURCE_URI'
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --speed-uri "$SPEED_URI" --speed-unit km/h --iterations 10
+```
+
+The example `km/h` must match the confirmed `currentValue` unit; `mph` and `m/s`
+are also supported. Use `--speed-auth-file` for separate speed credentials; lighting
+and navigation credentials are not inherited. `adaptive_follow` and `carplay_snapshot`
+logs expose `speed_available`, `speed_kph`, and `follow_distance_m`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--speed-base` | The `::99:8080` entry above | Service tree when `--speed-uri` is absent |
+| `--speed-unit` | `auto` | Read response unit or specify a confirmed unit |
+| `--follow-lead-time` | 12 seconds | Speed-based lead time, range 1–30 seconds |
+| `--follow-min-distance` / `--follow-max-distance` | 50 / 500 meters | Adaptive limits, range 1–1000 meters |
+| `--speed-interval` | 2 seconds | Minimum wait after a speed read completes; at least 1 second |
+| `--speed-timeout` | 1 second | Total speed read/discovery budget including GET retries |
+| `--speed-max-age` | 5 seconds | Local receipt-age limit; at least interval+timeout |
+
+Failed reads invalidate the old speed immediately and fall back. Freshness uses
+local receipt time and **does not prove the upstream sensor is still updating**.
+Speed affects only follow eligibility, not execute, the three-second hold, or the
+30-second window. Lower thresholds revoke ineligible pulses without resetting the
+same turn's one-shot/max-duration budget solely because speed fluctuated.
+
+Disable adaptation and use a fixed 150-meter threshold (no speed requests):
+
+```sh
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --adaptive-follow=false --follow-distance 150 --iterations 10
+```
 
 For execute-only, one-pulse-per-window behavior:
 

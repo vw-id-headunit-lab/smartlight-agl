@@ -188,7 +188,7 @@ func str(v any) string { s, _ := v.(string); return s }
 func successStatus(v any) bool {
 	switch x := v.(type) {
 	case string:
-		return x == "success" || x == "ok" || x == "OK"
+		return x == "success" || x == "ok" || x == "OK" || x == "200" || x == "201" || x == "204"
 	case json.Number:
 		return x == "200" || x == "201" || x == "204"
 	}
