@@ -18,6 +18,10 @@ Review regressions also cover snapshot-change polling cadence and cancellation,
 max-duration shorter than hold/interval, slow preflight at the window deadline,
 service-side POST references through a path-rewriting proxy, and routes that
 stop or change their maneuver reference during the final pre-POST recheck.
+Repeat regressions keep one exact owned request through follow/execute and ID
+refreshes, replace it only after service-side removal, preserve hold pacing for
+replacement, clean confirmed navigation boundaries, and bound slow navigation
+and completion reads by the original turn window rather than the hold cadence.
 
 Speed tests cover default-on/explicit-off options, unit conversion and malformed
 samples, bounded read-only discovery and cached URIs, rate limits/fallback/age,

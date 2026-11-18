@@ -377,6 +377,7 @@ func (d *StateDirectory) Close() error {
 
 type PulseSink interface {
 	Start(context.Context, *NavigationEvent) (bool, error)
+	Queued(context.Context) (bool, error)
 	Stop(context.Context) error
 }
 
@@ -421,6 +422,16 @@ func (s *NavigationSink) Start(ctx context.Context, event *NavigationEvent) (boo
 	}
 	return false, nil
 }
+func (s *NavigationSink) Queued(ctx context.Context) (bool, error) {
+	if s.Manager.State == nil {
+		return false, nil
+	}
+	rows, err := ownRows(ctx, s.Manager.Client, s.Manager.State)
+	if err == nil {
+		s.Manager.Client.Log("carplay_queue_check", Object{"queue_uri": s.Manager.State.QueueURI, "queued": len(rows) > 0})
+	}
+	return len(rows) > 0, err
+}
 func (s *NavigationSink) Stop(ctx context.Context) error { return s.Manager.Stop(ctx) }
 
 type Controller struct {
@@ -430,6 +441,7 @@ type Controller struct {
 	Repeat             bool
 	Clock              func() time.Time
 	Until, Started     time.Time
+	NextCheck          time.Time
 	Context, Direction string
 	Fired              bool
 	Adaptive           *AdaptiveFollow
@@ -449,6 +461,7 @@ func (c *Controller) Expire(ctx context.Context) error {
 		return err
 	}
 	c.Until = time.Time{}
+	c.NextCheck = time.Time{}
 	return nil
 }
 
@@ -517,7 +530,37 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 		return c.Expire(ctx)
 	}
 	if !c.Until.IsZero() {
-		return nil
+		if c.NextCheck.IsZero() || now.Before(c.NextCheck) {
+			return nil
+		}
+		// Repeating navigation keeps an owned request until the service removes
+		// it. The hold cadence schedules read-only completion checks, not DELETE.
+		windowEnd := c.Started.Add(c.MaxDuration)
+		checkCtx, cancel := context.WithTimeout(ctx, windowEnd.Sub(c.Clock()))
+		queued, err := c.Sink.Queued(checkCtx)
+		windowExpired := errors.Is(checkCtx.Err(), context.DeadlineExceeded) || !c.Clock().Before(windowEnd)
+		cancel()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if windowExpired {
+			return c.expireIndependent()
+		}
+		if err != nil {
+			return err
+		}
+		if queued {
+			c.NextCheck = c.Clock().Add(c.Hold)
+			return nil
+		}
+		// Settle the saved receipt before starting another request, even when
+		// the service has already completed it. Never infer absence by name.
+		if err = c.Expire(ctx); err != nil {
+			return err
+		}
+		if !c.Clock().Before(windowEnd) {
+			return nil
+		}
 	}
 	if c.Fired && !c.Repeat {
 		return nil
@@ -530,7 +573,7 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 	// This deadline bounds preflight as well as source reads. An already-sent
 	// POST may finish independently to preserve its receipt, then is revoked.
 	startCtx, cancel := context.WithTimeout(ctx, windowEnd.Sub(c.Clock()))
-	_, err := c.Sink.Start(startCtx, event)
+	started, err := c.Sink.Start(startCtx, event)
 	windowExpired := errors.Is(startCtx.Err(), context.DeadlineExceeded) || !c.Clock().Before(windowEnd)
 	cancel()
 	var recovery *RecoveryRequired
@@ -548,8 +591,12 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 	if err != nil {
 		return err
 	}
-	// Failed/ignored/skipped attempts wait the normal cadence too.
+	// Failed/ignored/skipped attempts and one-shot pulses keep the hold bound.
 	c.Until = c.Clock().Add(c.Hold)
+	if started && c.Repeat {
+		c.NextCheck = c.Until
+		c.Until = windowEnd
+	}
 	if windowEnd.Before(c.Until) {
 		c.Until = windowEnd
 	}

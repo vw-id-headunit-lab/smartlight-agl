@@ -493,6 +493,7 @@ func (f *fakeSink) Start(_ context.Context, e *NavigationEvent) (bool, error) {
 	f.active = true
 	return true, nil
 }
+func (f *fakeSink) Queued(context.Context) (bool, error) { return f.active, nil }
 func (f *fakeSink) Stop(context.Context) error {
 	if f.active {
 		f.stops++
@@ -515,7 +516,7 @@ func TestControllerRepeatWindowSurvivesIDChurn(t *testing.T) {
 	now = now.Add(time.Second)
 	e.ID = "3"
 	c.Step(context.Background(), e)
-	if len(sink.starts) != 2 || sink.active {
+	if len(sink.starts) != 1 || sink.active {
 		t.Fatal("id churn reset max-duration", sink)
 	}
 }
@@ -786,7 +787,8 @@ func (s *skippedPulseSink) Start(context.Context, *NavigationEvent) (bool, error
 	s.count++
 	return false, nil
 }
-func (s *skippedPulseSink) Stop(context.Context) error { return nil }
+func (s *skippedPulseSink) Queued(context.Context) (bool, error) { return false, nil }
+func (s *skippedPulseSink) Stop(context.Context) error           { return nil }
 
 func TestCLIArgumentValidation(t *testing.T) {
 	for _, args := range [][]string{{"trigger", "--base", "http://fixture/", "--direction", "left", "--purpose", "x"}, {"carplay", "--base", "http://fixture/"}, {"carplay", "--base", "http://fixture/", "--nav-base", "http://nav/", "--nav-registry", "http://registry/"}, {"trigger", "--base", "http://fixture/", "--direction", "left", "--hold", "NaN"}, {"cleanup"}} {

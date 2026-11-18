@@ -31,9 +31,13 @@ GET transport at most3 attempts, no status or mutation retry. Registry/light/nav
 auth never inherit. Page links stay same-origin/resource, max100 and cycle check.
 
 Controller follows continuous semantic context+derived direction, not mutable
-element id. Latest-main repeat+near-follow policy stays, with intentional unit/
-invalid-value/non-resetting-window corrections. Poll deadlines and waits honor
-both pulse expiry and the overall turn-window deadline; DELETE precedes new POST.
+element id. Repeat mode retains a successful request through follow/execute and
+ID refreshes while its exact queue identity remains present. Hold sets the minimum
+completion-check/retry cadence, not a forced revoke deadline. Only confirmed
+service-side removal allows settling the old receipt and starting another request.
+One-shot and skipped/failed attempts retain the hold deadline. Active repeat
+requests, navigation reads and completion checks honor the original turn-window
+deadline; DELETE/confirmed cleanup still precedes a replacement POST.
 Expired preflight work must not start a new POST. A POST already in flight still
 finishes under its bounded timeout to preserve Location before independent
 cleanup, so network/persistence/cleanup latency can extend actual visible timing.

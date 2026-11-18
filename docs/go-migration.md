@@ -58,7 +58,8 @@ python3 python-trigger/tools/build_release.py
    0.2km是200m，不是0.2m。execute无距离仍可触发，若提供距离也必须合法。
 2. 最大时长跟随连续上下文+派生左右方向，不因元素id/原方向变体刷新重置。
    无足够状态区分相邻同向转弯时不猜新窗口，仍受已有上限约束。
-3. 默认与最新main统一为有界重复脉冲，不再写“只execute/每个机动一次”的旧描述。
+3. 默认在有界窗口内保留仍在队列中的准确请求，follow切execute不撤销重建；服务移除后才可补发。
+   hold为重复模式的完成检查/重试间隔，one-shot仍以hold保持后撤销。
    --one-shot选择窗口一次，--follow-distance0关闭follow策略，仅保留execute。
 4. --nav-base/--nav-registry二选一；新增--nav-registry-auth-file，与导航/灯效凭据独立。
 5. 数字参数必须有限，来源歧义/schema/URI不合要求时清理本桥项并退出。
@@ -70,7 +71,8 @@ cmd/smartlight-agl负责signal-aware CLI；internal/smartlight/client.go负责�
 源快照、语义重校验、单位、计时与锁；app.go组合独立凭据和生命周期context。
 cmd/build-release负责静态交叉编译和确定性运行包。
 
-当前脉冲deadline约束慢来源GET；DELETE先于下一POST。有界POST完成身份落盘后再响应
+默认成功请求的总窗口deadline约束慢来源GET及队列完成检查；one-shot/失败尝试仍受hold约束。
+DELETE/清理确认先于下一POST。有界POST完成身份落盘后再响应
 Ctrl-C/SIGTERM，清理使用独立有界context。断电、SIGKILL、网络失联和未知POST完成
 结果仍需独立恢复；hold不是服务端TTL，player也不证明物理亮灯。
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep repeat-mode CarPlay requests while their exact queue item remains present,
+  avoiding three-second revoke/recreate interruptions during execute and across
+  follow-to-execute. Replace only after service-side removal; retain one-shot
+  holds, cleanup ownership, retry cadence and the original turn-window limit.
 - Merge main boot startup/failure cadence into the Go monitor without restoring
   the deleted Python CarPlay implementation; retain no-receipt audit evidence
   and stop with exit 78 when known request cleanup requires recovery.
