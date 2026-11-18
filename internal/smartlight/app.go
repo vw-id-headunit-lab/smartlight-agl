@@ -21,6 +21,10 @@ type Options struct {
 	Hold, Timeout, Interval, MaxDuration, FollowMeters                 float64
 	Apply, ConfirmAbsent, OneShot                                      bool
 	Iterations                                                         int
+	AdaptiveFollow                                                     bool
+	SpeedURI, SpeedBase, SpeedUnit, SpeedAuthFile                      string
+	FollowLead, FollowMin, FollowMax                                   float64
+	SpeedInterval, SpeedMaxAge, SpeedTimeout                           float64
 }
 
 const Usage = `Usage: smartlight-agl {list|probe|trigger|cleanup|carplay} [options]
@@ -76,6 +80,17 @@ func parseOptions(args []string, stderr io.Writer) (Options, error) {
 		fs.IntVar(&o.Iterations, "iterations", 0, "stop after N polls; 0 means continuous")
 		fs.BoolVar(&o.Apply, "apply", false, "actually create requests; default dry-run")
 		fs.BoolVar(&o.OneShot, "one-shot", false, "one pulse per semantic turn instead of repeating")
+		fs.BoolVar(&o.AdaptiveFollow, "adaptive-follow", true, "adapt follow distance using read-only VIWI speed; false disables")
+		fs.StringVar(&o.SpeedURI, "speed-uri", "", "confirmed VIWI speed element/collection URI; GET only")
+		fs.StringVar(&o.SpeedBase, "speed-base", DefaultSpeedBase, "VIWI service tree used when speed-uri is absent; GET only")
+		fs.StringVar(&o.SpeedUnit, "speed-unit", "auto", "auto requires response unit; or confirmed km/h, mph, m/s")
+		fs.StringVar(&o.SpeedAuthFile, "speed-auth-file", "", "speed-only Authorization file; no credential inheritance")
+		fs.Float64Var(&o.FollowLead, "follow-lead-time", 12, "adaptive lead time seconds, 1..30")
+		fs.Float64Var(&o.FollowMin, "follow-min-distance", 50, "adaptive minimum distance meters, 1..1000")
+		fs.Float64Var(&o.FollowMax, "follow-max-distance", 500, "adaptive maximum distance meters, min..1000")
+		fs.Float64Var(&o.SpeedInterval, "speed-interval", 2, "minimum delay after speed read seconds, 1..30")
+		fs.Float64Var(&o.SpeedMaxAge, "speed-max-age", 5, "received speed sample max age seconds, interval+timeout..60")
+		fs.Float64Var(&o.SpeedTimeout, "speed-timeout", 1, "total speed GET budget including retries seconds, 0.1..5")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return o, err
@@ -116,7 +131,45 @@ func parseOptions(args []string, stderr io.Writer) (Options, error) {
 	if o.Action == "carplay" && ((o.NavBase == "") == (o.NavRegistry == "")) {
 		return o, errors.New("provide exactly one of --nav-base or --nav-registry")
 	}
+	if o.Action == "carplay" {
+		var adaptiveFlags bool
+		fs.Visit(func(f *flag.Flag) {
+			if strings.HasPrefix(f.Name, "speed-") || f.Name == "follow-lead-time" || f.Name == "follow-min-distance" || f.Name == "follow-max-distance" {
+				adaptiveFlags = true
+			}
+		})
+		if adaptiveFlags && !o.AdaptiveFollow {
+			return o, errors.New("speed/adaptive tuning flags require --adaptive-follow")
+		}
+		if o.AdaptiveFollow {
+			if _, err := makeAdaptiveFollow(o, "", nil); err != nil {
+				return o, err
+			}
+		}
+	}
 	return o, nil
+}
+
+func makeAdaptiveFollow(o Options, auth string, log Logger) (*AdaptiveFollow, error) {
+	if !finiteRange(o.SpeedInterval, 1, 30) || !finiteRange(o.SpeedTimeout, .1, 5) || !finiteRange(o.SpeedMaxAge, o.SpeedInterval+o.SpeedTimeout, 60) {
+		return nil, errors.New("speed interval/timeout/max-age outside supported range")
+	}
+	var source *SpeedSource
+	var err error
+	if o.SpeedURI != "" {
+		source, err = NewSpeedSource(o.SpeedURI, o.SpeedUnit, auth, seconds(o.SpeedTimeout), log)
+	} else {
+		source, err = NewDiscoveringSpeedSource(o.SpeedBase, o.SpeedUnit, auth, seconds(o.SpeedTimeout), log)
+	}
+	if err != nil {
+		return nil, err
+	}
+	a := &AdaptiveFollow{Source: source, Fallback: o.FollowMeters, LeadSeconds: o.FollowLead, Min: o.FollowMin, Max: o.FollowMax,
+		Interval: seconds(o.SpeedInterval), MaxAge: seconds(o.SpeedMaxAge), Timeout: seconds(o.SpeedTimeout), Log: log}
+	if err = a.Validate(); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 func finiteRange(v, low, high float64) bool {
@@ -292,6 +345,17 @@ func execute(ctx context.Context, o Options, log Logger) (err error) {
 	source := &NavigationSource{Client: nav, FollowMeters: o.FollowMeters}
 	sink := &NavigationSink{Manager: manager, Directory: directory, Source: source}
 	controller := &Controller{Sink: sink, Hold: seconds(o.Hold), MaxDuration: seconds(o.MaxDuration), FollowMeters: o.FollowMeters, Repeat: !o.OneShot, Clock: time.Now}
+	if o.AdaptiveFollow {
+		speedAuth, err := readAuth(o.SpeedAuthFile)
+		if err != nil {
+			return err
+		}
+		adaptive, err := makeAdaptiveFollow(o, speedAuth, log)
+		if err != nil {
+			return err
+		}
+		source.Adaptive, controller.Adaptive = adaptive, adaptive
+	}
 	log("carplay_started", Object{"apply": o.Apply, "state_dir": stateDir, "input": "simplenavigation_http_poll", "physical_light_verified": false})
 	return RunMonitor(ctx, source, controller, o.Iterations, seconds(o.Interval), log)
 }
