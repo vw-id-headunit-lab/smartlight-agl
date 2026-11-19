@@ -29,10 +29,12 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 默认execute或follow且距离≤当前阈值。默认车速自适应为speed(km/h)/3.6×12秒，
 限幅50–500米；车速未知回退150米。`--adaptive-follow=false`关闭自适应且不读取速度。
 `--follow-distance 0`保持仅execute并跳过车速读取。单位m/km/mi/yd/ft归一化；拒绝bool/负/非有限/字符串/
-未知单位。hold到期先DELETE，仍eligible可再次POST；连续上下文+左右方向窗口不因id刷新
+未知单位。默认保留自己创建且仍在队列中的请求，follow切execute不撤销重建；按至少hold间隔
+只读检查准确队列身份，确认服务已移除后才清理记录并在仍eligible时重新POST。连续上下文+左右方向窗口不因id刷新
 重置。far/inactive/prepare/instruction或换来源/方向结束窗口；未观测到边界的同向转弯
 继续共享窗口。--one-shot选窗口一次；--follow-distance 0仅execute。
-轮询与等待同时受hold和max-duration截止时间约束；窗口到期不再启动新POST。
+默认成功请求的轮询、完成检查与等待受max-duration约束；one-shot和失败/跳过的尝试仍使用hold截止时间。
+窗口到期不再启动新POST。
 已在途POST仍按超时完成并保存Location后清理，网络/持久化/清理耗时会影响实际灯效时长。
 
 | 参数 | 默认 | 意义 |
@@ -41,7 +43,7 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 | --nav-base / --nav-registry | 二选一必填 | 实际导航服务/注册中心 |
 | --apply | false | 创建请求，默认只读 |
 | --interval | 2 | 轮询延迟0.1–5秒，HTTP另占时间；低于2秒可能闪屏 |
-| --hold | 3 | 脉冲目标时长0.1–5秒，不是server TTL；低于3秒可能闪屏 |
+| --hold | 3 | 重复模式完成检查/重试最小间隔；one-shot保持时长，0.1–5秒，不是server TTL |
 | --max-duration | 30 | 连续语义窗口1–300秒，不随id刷新重置 |
 | --follow-distance | 150 | 固定/车速失败回退米阈值0–1000；0关闭follow策略 |
 | --adaptive-follow | true | 车速自适应；显式false关闭 |

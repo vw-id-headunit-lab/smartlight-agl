@@ -73,7 +73,7 @@ func parseOptions(args []string, stderr io.Writer) (Options, error) {
 		fs.StringVar(&o.NavAuthFile, "nav-auth-file", "", "navigation-only Authorization file")
 		fs.StringVar(&o.RegistryAuthFile, "nav-registry-auth-file", "", "registry-only Authorization file; never inherited by service")
 		fs.StringVar(&o.StateDir, "state-dir", "", "private state directory (default TMPDIR/smartlight-carplay)")
-		fs.Float64Var(&o.Hold, "hold", 3, "individual pulse hold seconds, 0.1..5; below 3 may cause display flicker")
+		fs.Float64Var(&o.Hold, "hold", 3, "completion-check/retry cadence or one-shot hold seconds, 0.1..5; below 3 may cause display flicker")
 		fs.Float64Var(&o.Interval, "interval", 2, "poll delay seconds, 0.1..5; below 2 may cause display flicker")
 		fs.Float64Var(&o.MaxDuration, "max-duration", 30, "max semantic-turn window seconds, 1..300; id refresh does not reset")
 		fs.Float64Var(&o.FollowMeters, "follow-distance", 150, "follow-stage threshold in meters, 0..1000; 0 disables follow trigger")

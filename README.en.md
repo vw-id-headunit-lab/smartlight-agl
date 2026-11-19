@@ -130,19 +130,21 @@ are not hard-coded.
 - Trigger during `execute`, or during `follow` with a valid remaining distance at or below the current threshold.
 - **Speed adaptation is enabled by default**: `distance = speed(km/h) / 3.6 * 12 seconds`, clamped to **50–500 meters**; unavailable speed falls back to **150 meters**.
 - Normalize `m/km/mi/yd/ft`. Do not guess turns from straight/unknown directions or invalid distances.
-- Each pulse has a three-second target hold. Revoke the old request before creating another eligible pulse.
+- Keep the owned request while it remains queued, including across follow-to-execute transitions; do not force DELETE/POST every three seconds.
+- Check for service-side removal at intervals of at least three seconds. Settle the old receipt and request again only after confirmed removal and while navigation remains eligible.
 - Limit a continuous semantic turn window to 30 seconds; refreshed element IDs do not reset it.
 - A far/inactive/noneligible state, direction change, or context change ends the window.
 
 These are current S2995 platform semantics, not universal vehicle or CarPlay values.
-`--hold` is a client cleanup deadline, not a server TTL; network and cleanup confirmation affect timing.
+In repeat mode, `--hold` is the minimum completion-check/retry interval; with `--one-shot`, it remains the request cleanup deadline.
+It is not a server TTL. Network and cleanup confirmation affect timing, and queue presence does not prove that the physical animation is still playing.
 
 ### Optional adjustments
 
 | Flag | Default | Purpose |
 |---|---|---|
 | `--interval` | `2` seconds | Delay between polling rounds; HTTP requests take additional time; below 2 may cause flicker |
-| `--hold` | `3` seconds | Target hold for an individual request, range 0.1–5 seconds; below 3 may cause flicker |
+| `--hold` | `3` seconds | Minimum completion-check/retry interval in repeat mode, or request hold in one-shot mode; range 0.1–5 seconds |
 | `--max-duration` | `30` seconds | Continuous semantic turn window, range 1–300 seconds |
 | `--follow-distance` | `150` meters | Fallback when speed is unavailable, or fixed threshold when adaptation is disabled; zero permits only execute |
 | `--adaptive-follow` | On | Adjust follow distance by speed; `--adaptive-follow=false` disables it |
@@ -205,7 +207,7 @@ logs expose `speed_available`, `speed_kph`, and `follow_distance_m`.
 
 Failed reads invalidate the old speed immediately and fall back. Freshness uses
 local receipt time and **does not prove the upstream sensor is still updating**.
-Speed affects only follow eligibility, not execute, the three-second hold, or the
+Speed affects only follow eligibility, not execute, completion-check cadence, or the
 30-second window. Lower thresholds revoke ineligible pulses without resetting the
 same turn's one-shot/max-duration budget solely because speed fluctuated.
 

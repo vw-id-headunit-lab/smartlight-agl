@@ -85,6 +85,7 @@ func (s *timingPulseSink) Start(context.Context, *NavigationEvent) (bool, error)
 	s.active = true
 	return true, nil
 }
+func (s *timingPulseSink) Queued(context.Context) (bool, error) { return s.active, nil }
 
 func (s *timingPulseSink) Stop(context.Context) error {
 	if s.active {
@@ -156,7 +157,7 @@ func TestMonitorExhaustedWindowKeepsNormalPollingCadence(t *testing.T) {
 	}
 }
 
-func TestControllerFinalPulseClipsToWindow(t *testing.T) {
+func TestControllerRepeatRequestKeepsOriginalWindow(t *testing.T) {
 	now := time.Now()
 	sink := &fakeSink{}
 	controller := &Controller{Sink: sink, Hold: 3 * time.Second, MaxDuration: 5 * time.Second, Repeat: true, FollowMeters: 150, Clock: func() time.Time { return now }}
@@ -169,14 +170,14 @@ func TestControllerFinalPulseClipsToWindow(t *testing.T) {
 	if err := controller.Step(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if controller.Until != windowEnd || len(sink.starts) != 2 {
-		t.Fatalf("last pulse exceeds window: until=%s window=%s starts=%d", controller.Until, windowEnd, len(sink.starts))
+	if controller.Until != windowEnd || len(sink.starts) != 1 || sink.stops != 0 {
+		t.Fatalf("repeat interrupted request or changed window: until=%s window=%s starts=%d stops=%d", controller.Until, windowEnd, len(sink.starts), sink.stops)
 	}
 	now = windowEnd
 	if err := controller.Step(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if sink.active || len(sink.starts) != 2 || !controller.pulseDeadline().IsZero() {
+	if sink.active || len(sink.starts) != 1 || !controller.pulseDeadline().IsZero() {
 		t.Fatal("exhausted window restarted or retained an expired poll deadline")
 	}
 }

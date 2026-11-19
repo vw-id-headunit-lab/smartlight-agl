@@ -20,6 +20,11 @@
   uses the confirmed collection. Other vehicles require their own URI check.
 - Window: repeat is bounded, one-shot opts out. ID refresh cannot reset maximum;
   far/inactive/noneligible/direction/context change ends continuous turn.
+- Repeated execute interruptions: repeat mode keeps its exact owned queue item
+  while present, including across follow/execute. It does not force revoke at
+  each hold interval; hold schedules completion checks and failed/skipped retries.
+  One-shot still revokes after hold. If the physical light pauses while the owned
+  queue item remains present, inspect player selection and other service requests.
 - cleanup_pending: retain state, use cleanup with original service/prefix/auth.
   No Location after uncertain POST means no name-based delete, no POST retry.
 - carplay_post_ignored: the monitor skipped one failed pulse and continues at
