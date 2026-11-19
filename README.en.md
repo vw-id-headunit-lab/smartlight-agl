@@ -105,7 +105,7 @@ After the dry-run matches the current route, run:
 
 ```sh
 sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
-  --apply --interval 2 --hold 3 --max-duration 30 \
+  --apply --interval 2 --hold 3 --max-duration 15 \
   --state-dir /tmp/smartlight-carplay
 ```
 
@@ -113,7 +113,7 @@ The direct binary command is equivalent:
 
 ```sh
 ./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" \
-  --apply --interval 2 --hold 3 --max-duration 30 \
+  --apply --interval 2 --hold 3 --max-duration 15 \
   --state-dir /tmp/smartlight-carplay
 ```
 
@@ -129,11 +129,13 @@ are not hard-coded.
 
 - Trigger during `execute`, or during `follow` with a valid remaining distance at or below the current threshold.
 - **Speed adaptation is enabled by default**: `distance = speed(km/h) / 3.6 * 12 seconds`, clamped to **50–500 meters**; unavailable speed falls back to **150 meters**.
+- When SmartLight accepts the first request, keep the trigger threshold and pause speed reads until navigation confirms the turn has ended. SmartLight controls playback timing.
 - Normalize `m/km/mi/yd/ft`. Do not guess turns from straight/unknown directions or invalid distances.
-- Keep the owned request while it remains queued, including across follow-to-execute transitions; do not force DELETE/POST every three seconds.
-- Check for service-side removal at intervals of at least three seconds. Settle the old receipt and request again only after confirmed removal and while navigation remains eligible.
-- Limit a continuous semantic turn window to 30 seconds; refreshed element IDs do not reset it.
+- Open a 15-second request window when `follow` first meets the distance threshold and another when `execute` first begins. Stage regressions and element ID refreshes preserve the original deadlines.
+- Check for service-side removal at intervals of at least three seconds within an open window. Settle the old receipt and request again only after confirmed removal.
+- Keep the owned request while it remains queued, including after either window expires and across the transition from `follow` to `execute`.
 - A far/inactive/noneligible state, direction change, or context change ends the window.
+- A confirmed empty `nextManeuver` also ends the turn. Window expiry and one-shot cleanup leave speed reads paused until a navigation boundary.
 
 These are current S2995 platform semantics, not universal vehicle or CarPlay values.
 In repeat mode, `--hold` is the minimum completion-check/retry interval; with `--one-shot`, it remains the request cleanup deadline.
@@ -145,10 +147,10 @@ It is not a server TTL. Network and cleanup confirmation affect timing, and queu
 |---|---|---|
 | `--interval` | `2` seconds | Delay between polling rounds; HTTP requests take additional time; below 2 may cause flicker |
 | `--hold` | `3` seconds | Minimum completion-check/retry interval in repeat mode, or request hold in one-shot mode; range 0.1–5 seconds |
-| `--max-duration` | `30` seconds | Continuous semantic turn window, range 1–300 seconds |
+| `--max-duration` | `15` seconds | Time to start or replace a request in each stage, range 1–300 seconds |
 | `--follow-distance` | `150` meters | Fallback when speed is unavailable, or fixed threshold when adaptation is disabled; zero permits only execute |
 | `--adaptive-follow` | On | Adjust follow distance by speed; `--adaptive-follow=false` disables it |
-| `--one-shot` | Off | One pulse per semantic turn window instead of repeating |
+| `--one-shot` | Off | One execute-stage pulse per turn |
 | `--timeout` | `2` seconds | Per-request timeout; GET transport failures get at most three attempts |
 | `--iterations` | `0` | Zero runs continuously; a positive integer bounds polling rounds |
 | `--state-dir` | Temporary directory + `smartlight-carplay` | Request ownership records and monitor lock |
@@ -193,7 +195,8 @@ Default `auto` works for this vehicle; explicit `--speed-unit km/h` also matches
 `kmPerHour`. `mph` and `m/s` are also supported and must match the confirmed unit.
 Use `--speed-auth-file` for separate speed credentials; lighting
 and navigation credentials are not inherited. `adaptive_follow` and `carplay_snapshot`
-logs expose `speed_available`, `speed_kph`, and `follow_distance_m`.
+logs expose `speed_available`, `speed_kph`, and `follow_distance_m`. During a
+turn with an accepted request, `speed_sampling_paused` marks the retained values.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -207,9 +210,8 @@ logs expose `speed_available`, `speed_kph`, and `follow_distance_m`.
 
 Failed reads invalidate the old speed immediately and fall back. Freshness uses
 local receipt time and **does not prove the upstream sensor is still updating**.
-Speed affects only follow eligibility, not execute, completion-check cadence, or the
-30-second window. Lower thresholds revoke ineligible pulses without resetting the
-same turn's one-shot/max-duration budget solely because speed fluctuated.
+Before a request succeeds, speed sets the follow eligibility threshold. The
+completion-check cadence applies within each stage's request window.
 
 Disable adaptation and use a fixed 150-meter threshold (no speed requests):
 

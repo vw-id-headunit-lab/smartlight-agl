@@ -303,39 +303,138 @@ func TestAdaptiveSlowSpeedCannotDelayActivePulseCleanup(t *testing.T) {
 	}
 }
 
-func TestAdaptiveSpeedDoesNotRearmTurnWindow(t *testing.T) {
-	for _, repeat := range []bool{false, true} {
-		now := time.Now()
-		a := testAdaptive(speedFunc(func(context.Context) (float64, error) { return 120, nil }), func() time.Time { return now })
-		a.valid, a.speed, a.received = true, 120, now
-		sink := &fakeSink{}
-		c := &Controller{Sink: sink, Hold: time.Second, MaxDuration: 5 * time.Second, Repeat: repeat, FollowMeters: 150, Clock: func() time.Time { return now }, Adaptive: a}
-		distance := 300.0
-		event := &NavigationEvent{ContextURI: "same", Direction: "left", Stage: "follow", Distance: &distance}
-		if err := c.Step(context.Background(), event); err != nil {
-			t.Fatal(err)
+func TestAdaptiveSpeedIsPausedForAppliedTurn(t *testing.T) {
+	for _, repeat := range []bool{true, false} {
+		name := "repeat"
+		if !repeat {
+			name = "one-shot"
 		}
-		started := c.Started
-		now = now.Add(time.Second)
-		a.speed = 30
-		c.Step(context.Background(), event)
-		if sink.active || c.Started != started {
-			t.Fatal("lower threshold failed cleanup or reset window")
-		}
-		now = now.Add(6 * time.Second)
-		a.speed, a.received = 120, now
-		c.Step(context.Background(), event)
-		if sink.active || len(sink.starts) != 1 || c.Started != started {
-			t.Fatal("speed oscillation rearmed exhausted turn")
-		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			started := time.Now()
+			now := started
+			controller, source, manager := repeatController(t, f, func() time.Time { return now })
+			controller.Repeat = repeat
+			var reads int
+			adaptive := testAdaptive(speedFunc(func(context.Context) (float64, error) {
+				reads++
+				if reads == 1 {
+					return 120, nil
+				}
+				return 30, nil
+			}), controller.Clock)
+			source.Adaptive, controller.Adaptive = adaptive, adaptive
+
+			// Drive the monitor through sample expiry, possible re-post,
+			// stage expiry, and a different turn in the same context.
+			if repeat {
+				f.configure(func(f *fixture) { f.stage, f.distance = "follow", 300 })
+			}
+			snapshots := 0
+			wantPosts := 1
+			log := func(event string, fields Object) {
+				if event != "carplay_snapshot" {
+					return
+				}
+				snapshots++
+				switch snapshots {
+				case 1:
+					if manager.State == nil || f.snapshot().count != 1 {
+						t.Fatal("first eligible turn did not start")
+					}
+					now = started.Add(6 * time.Second)
+					f.configure(func(f *fixture) {
+						f.distance = 280
+						f.queue = f.queue[:1] // The service finished the first request.
+					})
+				case 2:
+					if repeat {
+						wantPosts = 2
+					}
+					if f.snapshot().count != wantPosts || (manager.State != nil) != repeat {
+						t.Fatal("the frozen threshold did not carry through service completion")
+					}
+					now = started.Add(9 * time.Second)
+					f.configure(func(f *fixture) { f.stage, f.id = "execute", "refreshed" })
+				case 3:
+					now = controller.Started.Add(controller.MaxDuration)
+				case 4:
+					if (manager.State != nil) != repeat || f.snapshot().count != wantPosts {
+						t.Fatal("stage expiry changed request ownership")
+					}
+					now = started.Add(32 * time.Second)
+					f.configure(func(f *fixture) {
+						if repeat {
+							f.stage, f.direction, f.distance, f.id = "follow", 192, 300, "right"
+						} else {
+							f.id = "" // Confirmed absence ends the turn even with an active route.
+						}
+					})
+				case 5:
+					if fields["speed_sampling_paused"] != nil || f.snapshot().count != wantPosts {
+						t.Fatalf("turn boundary retained the paused sampling or posted: fields=%v posts=%d", fields, f.snapshot().count)
+					}
+					if repeat {
+						if reads != 2 || fields["follow_distance_m"] != 100.0 {
+							t.Fatalf("opposite turn did not use live speed: reads=%d fields=%v", reads, fields)
+						}
+					} else {
+						f.configure(func(f *fixture) {
+							f.stage, f.distance, f.id = "execute", 80, "next-left"
+						})
+					}
+				case 6:
+					if reads != 2 || fields["follow_distance_m"] != 100.0 || f.snapshot().count != 2 {
+						t.Fatalf("turn after confirmed absence did not rearm: reads=%d fields=%v posts=%d", reads, fields, f.snapshot().count)
+					}
+				}
+				if snapshots <= 4 && (reads != 1 || fields["follow_distance_m"] != 400.0 || fields["speed_sampling_paused"] != true) {
+					t.Fatalf("turn updated speed on round %d: reads=%d fields=%v", snapshots, reads, fields)
+				}
+			}
+			iterations := 5
+			if !repeat {
+				iterations = 6
+			}
+			if err := RunMonitor(context.Background(), source, controller, iterations, 0, log); err != nil {
+				t.Fatal(err)
+			}
+			if snapshots != iterations {
+				t.Fatalf("observed %d snapshots, want %d", snapshots, iterations)
+			}
+		})
+	}
+}
+
+func TestAdaptiveSpeedDoesNotRearmUnappliedTurnWindow(t *testing.T) {
+	now := time.Now()
+	a := testAdaptive(speedFunc(func(context.Context) (float64, error) { return 120, nil }), func() time.Time { return now })
+	a.valid, a.speed, a.received = true, 120, now
+	sink := &fakeSink{}
+	c := &Controller{Sink: sink, Hold: time.Second, MaxDuration: 5 * time.Second, Repeat: true, FollowMeters: 150, Clock: func() time.Time { return now }, Adaptive: a}
+	distance := 300.0
+	event := &NavigationEvent{ContextURI: "same", Direction: "left", Stage: "follow", Distance: &distance}
+	if err := c.Step(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	started := c.Started
+	now = now.Add(time.Second)
+	a.speed = 30
+	if err := c.Step(context.Background(), event); err != nil || sink.active || c.Started != started {
+		t.Fatalf("lower threshold failed cleanup or reset window: %v", err)
+	}
+	now = now.Add(6 * time.Second)
+	a.speed, a.received = 120, now
+	if err := c.Step(context.Background(), event); err != nil || sink.active || len(sink.starts) != 1 || c.Started != started {
+		t.Fatalf("speed oscillation rearmed exhausted follow stage: %v", err)
 	}
 }
 
 func TestAdaptiveFollowCLIOptionsAndDefaults(t *testing.T) {
 	base := []string{"carplay", "--base", "http://fixture/smartlight/", "--nav-base", "http://fixture/navigation/"}
 	o, err := parseOptions(base, io.Discard)
-	if err != nil || !o.AdaptiveFollow || o.SpeedBase != DefaultSpeedBase || o.SpeedUnit != "auto" {
-		t.Fatalf("adaptive not default: %#v %v", o, err)
+	if err != nil || !o.AdaptiveFollow || o.SpeedBase != DefaultSpeedBase || o.SpeedUnit != "auto" || o.MaxDuration != 15 {
+		t.Fatalf("unexpected CarPlay defaults: %#v %v", o, err)
 	}
 	o, err = parseOptions(append(append([]string{}, base...), "--adaptive-follow=false"), io.Discard)
 	if err != nil || o.AdaptiveFollow {

@@ -32,15 +32,18 @@ auth never inherit. Page links stay same-origin/resource, max100 and cycle check
 
 Controller follows continuous semantic context+derived direction, not mutable
 element id. Repeat mode retains a successful request through follow/execute and
-ID refreshes while its exact queue identity remains present. Hold sets the minimum
-completion-check/retry cadence, not a forced revoke deadline. Only confirmed
-service-side removal allows settling the old receipt and starting another request.
-One-shot and skipped/failed attempts retain the hold deadline. Active repeat
-requests, navigation reads and completion checks honor the original turn-window
-deadline; DELETE/confirmed cleanup still precedes a replacement POST.
-Expired preflight work must not start a new POST. A POST already in flight still
-finishes under its bounded timeout to preserve Location before independent
-cleanup, so network/persistence/cleanup latency can extend actual visible timing.
+ID refreshes while its exact queue identity remains present. The first eligible
+follow snapshot and first execute snapshot each start a 15-second request window.
+Once execute begins, it is the only stage that can issue requests for that turn.
+Hold sets the minimum completion-check/retry cadence. Confirmed service-side
+removal allows settling the old receipt and starting another request.
+One-shot reserves a single hold-bound pulse for execute.
+
+Each stage deadline bounds completion checks and preflight. An expired window
+leaves an accepted request in the queue and navigation on its usual cadence.
+An in-flight POST finishes under its own timeout to preserve its Location.
+The pre-POST recheck also confirms the stage, so the next eligible snapshot
+opens the execute window when the stage changes during follow preflight.
 Recoverable snapshot changes wait at the normal polling cadence, with cancellable
 waits rather than a busy loop. Same-direction turns with no observable boundary
 share the window rather than inventing turn identity.
@@ -60,6 +63,9 @@ the configured origin, or an explicit speed URI bypasses discovery. Only the
 unambiguous velocityPrimary.currentValue is accepted, with response/configured
 units normalized to km/h. The default formula is speed/3.6*12s, clamped 50..500m;
 invalid/unavailable/stale samples fall back to the fixed follow-distance. Reads
-are rate-limited and bounded by both a speed budget and active pulse deadlines.
-No speed credentials inherit from navigation or lighting. Speed-only threshold
-changes revoke ineligible pulses without rearming the same turn's window budget.
+are rate-limited and bounded by the speed budget and the caller's deadline.
+Speed credentials are independent of navigation and lighting credentials.
+The first accepted POST freezes the threshold from its final recheck. Polling
+and replacement preflight use the frozen sample through stage expiry and
+one-shot cleanup. Confirmed navigation boundaries resume speed sampling.
+Speed fluctuations during skipped or failed attempts preserve the turn budget.

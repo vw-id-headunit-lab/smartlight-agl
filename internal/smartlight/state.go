@@ -446,10 +446,8 @@ func (m *RequestManager) Start(ctx context.Context, sel Selector, path string) (
 	if s.QueueURI == "" {
 		return false, &PostFailure{Err: errors.New("POST has no Location; retain request evidence")}
 	}
-	if ctx.Err() != nil {
-		return false, ctx.Err()
-	}
-	return true, nil
+	// Report the accepted request even if the caller's deadline expired in flight.
+	return true, ctx.Err()
 }
 
 func containsInt(xs []int, v int) bool {
