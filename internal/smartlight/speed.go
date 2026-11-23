@@ -10,7 +10,12 @@ import (
 	"time"
 )
 
-const DefaultSpeedBase = "http://[fd53:7cb8:383:3::99]:8080/"
+const (
+	DefaultSpeedBase  = "http://[fd53:7cb8:383:3::99]:8080/"
+	defaultFollowLead = 12
+	defaultFollowMin  = 50
+	defaultFollowMax  = 2000
+)
 
 // SpeedSource reads an explicit URI or discovers Displayspeed from a VIWI tree.
 // Discovered references stay on the configured origin and service subtree.
@@ -352,6 +357,24 @@ func (a *AdaptiveFollow) Refresh(ctx context.Context) error {
 	return nil // Optional speed failure never stops navigation or cleanup.
 }
 
+// defaultFollowDistance preserves the 12-second rule through 60 km/h, then
+// interpolates between 90/500, 120/1000 and 150/2000 (km/h and meters).
+// Current applies the configured lead-time scale and distance limits.
+func defaultFollowDistance(speedKPH float64) float64 {
+	switch {
+	case speedKPH <= 60:
+		return speedKPH / 3.6 * defaultFollowLead
+	case speedKPH <= 90:
+		return 200 + (speedKPH-60)/30*300
+	case speedKPH <= 120:
+		return 500 + (speedKPH-90)/30*500
+	case speedKPH < 150:
+		return 1000 + (speedKPH-120)/30*1000
+	default:
+		return defaultFollowMax
+	}
+}
+
 func (a *AdaptiveFollow) Current() (meters float64, speed *float64) {
 	if a.frozen != nil {
 		return a.frozen.meters, a.frozen.speed
@@ -360,7 +383,7 @@ func (a *AdaptiveFollow) Current() (meters float64, speed *float64) {
 		return a.Fallback, nil
 	}
 	v := a.speed
-	meters = v / 3.6 * a.LeadSeconds
+	meters = defaultFollowDistance(v) * (a.LeadSeconds / defaultFollowLead)
 	if meters < a.Min {
 		meters = a.Min
 	}
@@ -383,8 +406,8 @@ func (a *AdaptiveFollow) Fields() Object {
 }
 
 func (a *AdaptiveFollow) Validate() error {
-	if a.Source == nil || !finiteRange(a.Fallback, 0, 1000) || !finiteRange(a.LeadSeconds, 1, 30) || !finiteRange(a.Min, 1, 1000) || !finiteRange(a.Max, a.Min, 1000) || a.Interval < time.Second || a.MaxAge < a.Interval+a.Timeout || a.Timeout < 100*time.Millisecond {
-		return fmt.Errorf("invalid adaptive follow configuration: fallback 0..1000m, lead 1..30s, distance 1..1000m, interval >=1s, and max-age >= interval+timeout")
+	if a.Source == nil || !finiteRange(a.Fallback, 0, 1000) || !finiteRange(a.LeadSeconds, 1, 30) || !finiteRange(a.Min, 1, defaultFollowMax) || !finiteRange(a.Max, a.Min, defaultFollowMax) || a.Interval < time.Second || a.MaxAge < a.Interval+a.Timeout || a.Timeout < 100*time.Millisecond {
+		return fmt.Errorf("invalid adaptive follow configuration: fallback 0..1000m, lead 1..30s, distance 1..2000m, interval >=1s, and max-age >= interval+timeout")
 	}
 	return nil
 }

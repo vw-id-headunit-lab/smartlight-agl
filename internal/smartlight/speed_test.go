@@ -22,7 +22,7 @@ type speedFunc func(context.Context) (float64, error)
 func (f speedFunc) Read(ctx context.Context) (float64, error) { return f(ctx) }
 
 func testAdaptive(reader SpeedReader, clock func() time.Time) *AdaptiveFollow {
-	return &AdaptiveFollow{Source: reader, Fallback: 150, LeadSeconds: 12, Min: 50, Max: 500,
+	return &AdaptiveFollow{Source: reader, Fallback: 150, LeadSeconds: defaultFollowLead, Min: defaultFollowMin, Max: defaultFollowMax,
 		Interval: 2 * time.Second, MaxAge: 5 * time.Second, Timeout: time.Second, Clock: clock}
 }
 
@@ -101,7 +101,10 @@ func TestAdaptiveDistanceClampsAndFallback(t *testing.T) {
 	if meters, speed := a.Current(); meters != 150 || speed != nil {
 		t.Fatal("startup must use fixed fallback")
 	}
-	for _, tc := range []struct{ speed, meters float64 }{{0, 50}, {30, 100}, {60, 200}, {120, 400}, {180, 500}} {
+	for _, tc := range []struct{ speed, meters float64 }{
+		{0, 50}, {15, 50}, {30, 100}, {60, 200}, {75, 350}, {90, 500},
+		{105, 750}, {120, 1000}, {135, 1500}, {150, 2000}, {180, 2000}, {300, 2000},
+	} {
 		value = tc.speed
 		now = now.Add(3 * time.Second)
 		if err := a.Refresh(context.Background()); err != nil {
@@ -132,6 +135,34 @@ func TestAdaptiveDistanceClampsAndFallback(t *testing.T) {
 	a.Refresh(context.Background())
 	if meters, speed := a.Current(); meters != 0 || speed != nil || count != before {
 		t.Fatal("execute-only should disable speed reads and follow")
+	}
+}
+
+func TestAdaptiveDistanceTuning(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		speed, lead, min, max, meters float64
+	}{
+		{"shorter-lead", 120, 6, 50, 2000, 500},
+		{"longer-lead", 90, 24, 50, 2000, 1000},
+		{"minimum", 30, 12, 250, 2000, 250},
+		{"maximum", 150, 12, 50, 1500, 1500},
+		{"scaled-maximum", 150, 24, 50, 2000, 2000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			a := testAdaptive(speedFunc(func(context.Context) (float64, error) { return tc.speed, nil }), func() time.Time { return now })
+			a.LeadSeconds, a.Min, a.Max = tc.lead, tc.min, tc.max
+			if err := a.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Refresh(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if meters, speed := a.Current(); meters != tc.meters || speed == nil || *speed != tc.speed {
+				t.Fatalf("distance=%v speed=%v; want distance=%v speed=%v", meters, speed, tc.meters, tc.speed)
+			}
+		})
 	}
 }
 
@@ -388,7 +419,7 @@ func TestAdaptiveSpeedIsPausedForAppliedTurn(t *testing.T) {
 						t.Fatalf("turn after confirmed absence did not rearm: reads=%d fields=%v posts=%d", reads, fields, f.snapshot().count)
 					}
 				}
-				if snapshots <= 4 && (reads != 1 || fields["follow_distance_m"] != 400.0 || fields["speed_sampling_paused"] != true) {
+				if snapshots <= 4 && (reads != 1 || fields["follow_distance_m"] != 1000.0 || fields["speed_sampling_paused"] != true) {
 					t.Fatalf("turn updated speed on round %d: reads=%d fields=%v", snapshots, reads, fields)
 				}
 			}
@@ -433,7 +464,7 @@ func TestAdaptiveSpeedDoesNotRearmUnappliedTurnWindow(t *testing.T) {
 func TestAdaptiveFollowCLIOptionsAndDefaults(t *testing.T) {
 	base := []string{"carplay", "--base", "http://fixture/smartlight/", "--nav-base", "http://fixture/navigation/"}
 	o, err := parseOptions(base, io.Discard)
-	if err != nil || !o.AdaptiveFollow || o.SpeedBase != DefaultSpeedBase || o.SpeedUnit != "auto" || o.MaxDuration != 15 {
+	if err != nil || !o.AdaptiveFollow || o.SpeedBase != DefaultSpeedBase || o.SpeedUnit != "auto" || o.MaxDuration != 15 || o.FollowLead != 12 || o.FollowMin != 50 || o.FollowMax != 2000 {
 		t.Fatalf("unexpected CarPlay defaults: %#v %v", o, err)
 	}
 	o, err = parseOptions(append(append([]string{}, base...), "--adaptive-follow=false"), io.Discard)
@@ -442,13 +473,68 @@ func TestAdaptiveFollowCLIOptionsAndDefaults(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"--speed-uri", "http://user:pass@fixture/speed"}, {"--speed-unit", "knots"},
-		{"--follow-min-distance", "600"}, {"--follow-lead-time", "NaN"},
+		{"--follow-min-distance", "2001"}, {"--follow-max-distance", "2001"},
+		{"--follow-min-distance", "600", "--follow-max-distance", "500"}, {"--follow-lead-time", "NaN"},
 		{"--speed-interval", "0.5"}, {"--speed-max-age", "2"},
 		{"--adaptive-follow=false", "--speed-unit", "km/h"},
 	} {
 		if _, err := parseOptions(append(append([]string{}, base...), args...), io.Discard); err == nil {
 			t.Fatalf("invalid speed flags accepted: %v", args)
 		}
+	}
+}
+
+func TestAdaptiveCarPlayCLIDistanceBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		speed, meters float64
+	}{{"90-kph", 90, 500}, {"120-kph", 120, 1000}, {"150-kph", 150, 2000}, {"180-kph", 180, 2000}} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, boundary := range []struct {
+				name     string
+				offset   float64
+				wantPost int
+			}{{"at-threshold", 0, 1}, {"above-threshold", 1, 0}} {
+				t.Run(boundary.name, func(t *testing.T) {
+					f := newFixture(t)
+					f.configure(func(f *fixture) { f.stage, f.distance = "follow", tc.meters+boundary.offset })
+					speed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						_ = json.NewEncoder(w).Encode(Object{"data": Object{"type": "velocityPrimary", "currentValue": tc.speed, "unit": "km/h"}})
+					}))
+					defer speed.Close()
+					var out, stderr bytes.Buffer
+					args := []string{"carplay", "--base", f.server.URL + "/smartlight/", "--nav-base", f.server.URL + "/simplenavigation/", "--speed-uri", speed.URL + "/speed", "--iterations", "1", "--state-dir", t.TempDir(), "--apply"}
+					if code := Run(context.Background(), args, &out, &stderr); code != 0 {
+						t.Fatalf("code=%d %s %s", code, &out, &stderr)
+					}
+					if f.snapshot().count != boundary.wantPost {
+						t.Fatalf("posts=%d want=%d log=%s", f.snapshot().count, boundary.wantPost, &out)
+					}
+					var snapshots int
+					decoder := json.NewDecoder(&out)
+					for {
+						var fields Object
+						err := decoder.Decode(&fields)
+						if errors.Is(err, io.EOF) {
+							break
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						if fields["event"] == "carplay_snapshot" {
+							snapshots++
+							if fields["follow_distance_m"] != tc.meters || fields["speed_available"] != true {
+								t.Fatalf("unexpected threshold in snapshot: %v", fields)
+							}
+						}
+					}
+					if snapshots != 1 {
+						t.Fatalf("snapshots=%d want=1", snapshots)
+					}
+					f.assertBaseline(t)
+				})
+			}
+		})
 	}
 }
 

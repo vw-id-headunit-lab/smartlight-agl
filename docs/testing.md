@@ -23,8 +23,9 @@ traffic delays and ID refreshes. They cover a new execute window after follow
 expires, replacement after confirmed removal, hold pacing, out-of-window queue
 checks, accepted in-flight POSTs, and cleanup at navigation boundaries.
 
-Speed tests cover default-on/explicit-off options, unit conversion and malformed
-samples, bounded read-only discovery and cached URIs, rate limits/fallback/age,
+Speed tests cover default-on/explicit-off options, the piecewise distance curve
+(90 km/h: 500m, 120 km/h: 1000m, ≥150 km/h: 2000m), interpolation and tuning,
+unit conversion and malformed samples, bounded read-only discovery and cached URIs, rate limits/fallback/age,
 and complete high/low-speed CarPlay mock requests with exact cleanup. The monitor
 regression checks that an accepted request pauses sampling through replacement,
 sample expiry, and stage expiry, then resumes at a turn boundary.

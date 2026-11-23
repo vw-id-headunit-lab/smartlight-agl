@@ -128,7 +128,7 @@ are not hard-coded.
 ### Default trigger policy
 
 - Trigger during `execute`, or during `follow` with a valid remaining distance at or below the current threshold.
-- **Speed adaptation is enabled by default**: `distance = speed(km/h) / 3.6 * 12 seconds`, clamped to **50–500 meters**; unavailable speed falls back to **150 meters**.
+- **Speed adaptation is enabled by default**: a piecewise speed curve gives **500 meters at 90 km/h**, **1 kilometer at 120 km/h**, and **2 kilometers at ≥150 km/h**, clamped to **50–2000 meters**; unavailable speed falls back to **150 meters**.
 - When SmartLight accepts the first request, keep the trigger threshold and pause speed reads until navigation confirms the turn has ended. SmartLight controls playback timing.
 - Normalize `m/km/mi/yd/ft`. Do not guess turns from straight/unknown directions or invalid distances.
 - Open a 15-second request window when `follow` first meets the distance threshold and another when `execute` first begins. Stage regressions and element ID refreshes preserve the original deadlines.
@@ -162,9 +162,15 @@ It is not a server TTL. Network and cleanup confirmation affect timing, and queu
 | 0–15 km/h | 50 meters (minimum) |
 | 30 km/h | 100 meters |
 | 60 km/h | 200 meters |
-| 90 km/h | 300 meters |
-| 120 km/h | 400 meters |
-| ≥150 km/h | 500 meters (maximum) |
+| 90 km/h | 500 meters |
+| 120 km/h | 1 kilometer |
+| ≥150 km/h | 2 kilometers (maximum) |
+
+Through 60 km/h, use `speed(km/h) / 3.6 * 12 seconds`, with a 50-meter minimum.
+Between 60 and 150 km/h, interpolate linearly between adjacent speed points in
+the table; at ≥150 km/h, use 2000 meters. `--follow-lead-time` scales this distance
+curve by `value / 12` before applying `--follow-min-distance` and
+`--follow-max-distance`; it does not imply a constant lead time at every speed.
 
 This is a tunable project policy, not an OEM rule or road-type detector. The same
 speed produces the same threshold regardless of road classification.
@@ -202,8 +208,8 @@ turn with an accepted request, `speed_sampling_paused` marks the retained values
 |---|---|---|
 | `--speed-base` | The `::99:8080` entry above | Service tree when `--speed-uri` is absent |
 | `--speed-unit` | `auto` | Read response unit or specify a confirmed unit |
-| `--follow-lead-time` | 12 seconds | Speed-based lead time, range 1–30 seconds |
-| `--follow-min-distance` / `--follow-max-distance` | 50 / 500 meters | Adaptive limits, range 1–1000 meters |
+| `--follow-lead-time` | 12 seconds | Scale the default distance curve by value / 12, range 1–30 seconds |
+| `--follow-min-distance` / `--follow-max-distance` | 50 / 2000 meters | Adaptive limits, range 1–2000 meters |
 | `--speed-interval` | 2 seconds | Minimum wait after a speed read completes; at least 1 second |
 | `--speed-timeout` | 1 second | Total speed read/discovery budget including GET retries |
 | `--speed-max-age` | 5 seconds | Local receipt-age limit; at least interval+timeout |
