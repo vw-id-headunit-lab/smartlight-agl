@@ -137,7 +137,11 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 			if f.crossRef {
 				ref = "http://127.0.0.1:1/foreign"
 			}
-			write(200, []Object{{"id": "cp", "uri": "/simplenavigation/drivingContexts/cp", "technology": f.technology, "isRouteGuidanceActive": active, "nextManeuver": Object{"uri": ref}}})
+			var nextManeuver any
+			if f.id != "" {
+				nextManeuver = Object{"uri": ref}
+			}
+			write(200, []Object{{"id": "cp", "uri": "/simplenavigation/drivingContexts/cp", "technology": f.technology, "isRouteGuidanceActive": active, "nextManeuver": nextManeuver}})
 			return
 		}
 		if strings.Contains(r.URL.Path, "/maneuvers/") {
@@ -516,7 +520,7 @@ func TestControllerRepeatWindowSurvivesIDChurn(t *testing.T) {
 	now = now.Add(time.Second)
 	e.ID = "3"
 	c.Step(context.Background(), e)
-	if len(sink.starts) != 1 || sink.active {
+	if len(sink.starts) != 1 || !sink.active {
 		t.Fatal("id churn reset max-duration", sink)
 	}
 }
@@ -525,7 +529,13 @@ func TestControllerOneShotAndStopSessionReset(t *testing.T) {
 	now := time.Now()
 	sink := &fakeSink{}
 	c := &Controller{Sink: sink, Hold: 100 * time.Millisecond, MaxDuration: time.Second, FollowMeters: 150, Clock: func() time.Time { return now }}
-	e := &NavigationEvent{ContextURI: "c", Direction: "left", Stage: "execute"}
+	distance := 50.0
+	e := &NavigationEvent{ContextURI: "c", Direction: "left", Stage: "follow", Distance: &distance}
+	if err := c.Step(context.Background(), e); err != nil || len(sink.starts) != 0 {
+		t.Fatalf("one-shot fired during follow: starts=%v err=%v", sink.starts, err)
+	}
+	now = now.Add(90 * time.Second)
+	e.Stage = "execute"
 	c.Step(context.Background(), e)
 	now = now.Add(200 * time.Millisecond)
 	c.Step(context.Background(), e)

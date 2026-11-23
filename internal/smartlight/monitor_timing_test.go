@@ -15,12 +15,15 @@ import (
 func missingManeuverSource(t *testing.T, reads *atomic.Int32, first chan struct{}) *NavigationSource {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if reads.Add(1) == 1 && first != nil {
+		var nextManeuver any
+		if r.URL.Path == "/simplenavigation/drivingContexts/cp" {
+			nextManeuver = "/simplenavigation/maneuvers/became-current"
+		} else if reads.Add(1) == 1 && first != nil {
 			close(first)
 		}
 		_ = json.NewEncoder(w).Encode(Object{"status": "success", "data": []Object{{
 			"uri": "/simplenavigation/drivingContexts/cp", "technology": "appleCarPlay",
-			"isRouteGuidanceActive": true, "nextManeuver": nil,
+			"isRouteGuidanceActive": true, "nextManeuver": nextManeuver,
 		}}})
 	}))
 	t.Cleanup(server.Close)
@@ -95,38 +98,47 @@ func (s *timingPulseSink) Stop(context.Context) error {
 	return nil
 }
 
-func TestMonitorMaxDurationBoundsPulseBeforeNextPoll(t *testing.T) {
+func TestMonitorKeepsPulsePastStageWindow(t *testing.T) {
 	f := newFixture(t)
 	nav, err := NewClient(f.server.URL+"/simplenavigation/", "", "", time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sink := &timingPulseSink{}
-	controller := &Controller{Sink: sink, Hold: time.Second, MaxDuration: 150 * time.Millisecond, FollowMeters: 150, Repeat: true, Clock: time.Now}
-	if err = RunMonitor(context.Background(), &NavigationSource{Client: nav, FollowMeters: 150}, controller, 2, 600*time.Millisecond, nil); err != nil {
+	controller := &Controller{Sink: sink, Hold: time.Second, MaxDuration: 50 * time.Millisecond, FollowMeters: 150, Repeat: true, Clock: time.Now}
+	if err = RunMonitor(context.Background(), &NavigationSource{Client: nav, FollowMeters: 150}, controller, 2, 130*time.Millisecond, nil); err != nil {
 		t.Fatal(err)
 	}
 	duration := sink.stopped.Sub(sink.started)
-	if sink.starts != 1 || sink.active || duration < 140*time.Millisecond || duration >= 450*time.Millisecond {
-		t.Fatalf("max window did not bound active pulse: starts=%d active=%v duration=%s", sink.starts, sink.active, duration)
+	if sink.starts != 1 || sink.active || duration < 130*time.Millisecond {
+		t.Fatalf("stage expiry interrupted active pulse: starts=%d active=%v duration=%s", sink.starts, sink.active, duration)
 	}
 }
 
-func TestMonitorMaxDurationInterruptsSlowNavigationRead(t *testing.T) {
+func TestMonitorCanReadNavigationPastStageWindow(t *testing.T) {
 	f := newFixture(t)
-	f.configure(func(f *fixture) { f.navDelay = 700 * time.Millisecond })
+	f.configure(func(f *fixture) { f.navDelay = 80 * time.Millisecond })
 	nav, err := NewClient(f.server.URL+"/simplenavigation/", "", "", 2*time.Second, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sink := &timingPulseSink{}
-	controller := &Controller{Sink: sink, Hold: time.Second, MaxDuration: 150 * time.Millisecond, FollowMeters: 150, Repeat: true, Clock: time.Now}
-	if err = RunMonitor(context.Background(), &NavigationSource{Client: nav, FollowMeters: 150}, controller, 2, 10*time.Millisecond, nil); err != nil {
+	controller := &Controller{Sink: sink, Hold: time.Second, MaxDuration: 100 * time.Millisecond, FollowMeters: 150, Repeat: true, Clock: time.Now}
+	snapshots := 0
+	log := func(event string, _ Object) {
+		if event == "carplay_snapshot" {
+			snapshots++
+			if !sink.active {
+				t.Fatal("stage expiry revoked the request before the next snapshot")
+			}
+		}
+	}
+	if err = RunMonitor(context.Background(), &NavigationSource{Client: nav, FollowMeters: 150}, controller, 2, 10*time.Millisecond, log); err != nil {
 		t.Fatal(err)
 	}
 	duration := sink.stopped.Sub(sink.started)
-	if duration < 140*time.Millisecond || duration >= 450*time.Millisecond || sink.active {
-		t.Fatalf("slow source postponed max-window cleanup: duration=%s active=%v", duration, sink.active)
+	if snapshots != 2 || duration <= controller.MaxDuration || sink.active {
+		t.Fatalf("stage expiry interrupted a slow navigation read: snapshots=%d duration=%s active=%v", snapshots, duration, sink.active)
 	}
 }
 
@@ -150,8 +162,7 @@ func TestMonitorExhaustedWindowKeepsNormalPollingCadence(t *testing.T) {
 	if len(snapshots) != 4 || sink.starts != 1 || sink.active {
 		t.Fatalf("exhausted window restarted or skipped polls: snapshots=%d starts=%d active=%v", len(snapshots), sink.starts, sink.active)
 	}
-	// The second interval may be shortened to reach the window deadline, but
-	// after cleanup the expired window must not keep shortening every wait.
+	// An expired request window leaves navigation on its normal cadence.
 	if elapsed := snapshots[3].Sub(snapshots[2]); elapsed < 80*time.Millisecond {
 		t.Fatalf("expired window caused a fast retry loop: last interval=%s", elapsed)
 	}
@@ -170,15 +181,15 @@ func TestControllerRepeatRequestKeepsOriginalWindow(t *testing.T) {
 	if err := controller.Step(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if controller.Until != windowEnd || len(sink.starts) != 1 || sink.stops != 0 {
-		t.Fatalf("repeat interrupted request or changed window: until=%s window=%s starts=%d stops=%d", controller.Until, windowEnd, len(sink.starts), sink.stops)
+	if !controller.HoldUntil.IsZero() || len(sink.starts) != 1 || sink.stops != 0 {
+		t.Fatalf("repeat interrupted request or scheduled a hold deadline: until=%s starts=%d stops=%d", controller.HoldUntil, len(sink.starts), sink.stops)
 	}
 	now = windowEnd
 	if err := controller.Step(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if sink.active || len(sink.starts) != 1 || !controller.pulseDeadline().IsZero() {
-		t.Fatal("exhausted window restarted or retained an expired poll deadline")
+	if !sink.active || len(sink.starts) != 1 || sink.stops != 0 {
+		t.Fatal("exhausted window stopped or restarted an active request")
 	}
 }
 
@@ -241,12 +252,12 @@ func testSlowPreflightWindow(t *testing.T, partialBody bool) {
 	if err = controller.Step(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if f.snapshot().count != 0 || manager.State != nil || !controller.Until.IsZero() {
-		t.Fatalf("expired window attempted a new POST: posts=%d state=%#v until=%s", f.snapshot().count, manager.State, controller.Until)
+	if f.snapshot().count != 0 || manager.State != nil || !controller.HoldUntil.IsZero() {
+		t.Fatalf("expired window attempted a new POST: posts=%d state=%#v until=%s", f.snapshot().count, manager.State, controller.HoldUntil)
 	}
 }
 
-func TestControllerExpiredInFlightPostStillPersistsAndCleans(t *testing.T) {
+func TestControllerInFlightPostSurvivesStageExpiry(t *testing.T) {
 	f := newFixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -268,33 +279,38 @@ func TestControllerExpiredInFlightPostStillPersistsAndCleans(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer directory.Close()
-	source := &NavigationSource{Client: nav, FollowMeters: 150}
+	adaptive := testAdaptive(speedFunc(func(context.Context) (float64, error) { return 60, nil }), time.Now)
+	source := &NavigationSource{Client: nav, FollowMeters: 150, Adaptive: adaptive}
 	event, err := source.Poll(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	manager := &RequestManager{Client: light, Apply: true}
-	controller := &Controller{Sink: &NavigationSink{Manager: manager, Directory: directory, Source: source}, Hold: 3 * time.Second, MaxDuration: 100 * time.Millisecond, FollowMeters: 150, Repeat: true, Clock: time.Now}
-	started := time.Now()
+	controller := &Controller{Sink: &NavigationSink{Manager: manager, Directory: directory, Source: source}, Hold: 3 * time.Second, MaxDuration: 100 * time.Millisecond, FollowMeters: 150, Repeat: true, Clock: time.Now, Adaptive: adaptive}
+	defer func() {
+		if err := controller.expireIndependent(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err = controller.Step(context.Background(), event); err != nil {
-		t.Fatalf("in-flight receipt not recovered after window expiry: %v", err)
+		t.Fatalf("in-flight request failed at stage expiry: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("expired POST was held for an additional pulse: %s", elapsed)
+	if manager.State == nil || len(f.snapshot().writes) != 1 {
+		t.Fatalf("stage expiry did not retain the accepted POST: state=%#v writes=%v", manager.State, f.snapshot().writes)
 	}
-	f.assertBaseline(t)
-	if manager.State != nil || !controller.Until.IsZero() || f.snapshot().count != 1 {
-		t.Fatalf("in-flight POST not cleaned once: state=%#v until=%s posts=%d", manager.State, controller.Until, f.snapshot().count)
+	if adaptive.Fields()["speed_sampling_paused"] != true {
+		t.Fatal("accepted request released speed sampling before the navigation boundary")
 	}
-	paths, err := filepath.Glob(filepath.Join(directory.Path, "carplay-*.json"))
-	if err != nil || len(paths) != 1 {
-		t.Fatalf("expected one saved receipt: %v %v", paths, err)
+	path := manager.Path
+	if err = controller.Step(context.Background(), event); err != nil || len(f.snapshot().writes) != 1 {
+		t.Fatalf("expired stage changed the request: %v writes=%v", err, f.snapshot().writes)
 	}
-	saved, err := LoadState(paths[0])
+	if err = controller.Step(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadState(path)
 	if err != nil || saved.QueueURI == "" || saved.Phase != "cleaned" {
 		t.Fatalf("receipt was not preserved through cleanup: %#v %v", saved, err)
 	}
-	if err = controller.Step(context.Background(), event); err != nil || f.snapshot().count != 1 {
-		t.Fatalf("expired turn restarted after POST cleanup: %v posts=%d", err, f.snapshot().count)
-	}
+	f.assertBaseline(t)
 }

@@ -21,7 +21,7 @@ func repeatController(t *testing.T, f *fixture, clock func() time.Time) (*Contro
 	manager := &RequestManager{Client: f.client(t), Apply: true, Hold: 3 * time.Second}
 	c := &Controller{
 		Sink: &NavigationSink{Manager: manager, Directory: directory, Source: source},
-		Hold: 3 * time.Second, MaxDuration: 30 * time.Second, FollowMeters: 150,
+		Hold: 3 * time.Second, MaxDuration: defaultStageDuration * time.Second, FollowMeters: 150,
 		Repeat: true, Clock: clock,
 	}
 	t.Cleanup(func() {
@@ -53,15 +53,16 @@ func TestRepeatKeepsOwnedRequestAcrossFollowExecuteAndIDRefresh(t *testing.T) {
 	now := started
 	c, source, manager := repeatController(t, f, func() time.Time { return now })
 	for _, step := range []struct {
-		elapsed time.Duration
-		stage   string
-		id      string
+		elapsed, stageStarted time.Duration
+		stage, id             string
 	}{
-		{0, "follow", "follow"},
-		{2 * time.Second, "execute", "execute"},
-		{3 * time.Second, "execute", "refreshed"},
-		{6 * time.Second, "execute", "refreshed-again"},
-		{29 * time.Second, "execute", "last"},
+		{0, 0, "follow", "follow"},
+		{15 * time.Second, 0, "follow", "traffic"},
+		{90 * time.Second, 90 * time.Second, "execute", "execute"},
+		{93 * time.Second, 90 * time.Second, "execute", "refreshed"},
+		{105 * time.Second, 90 * time.Second, "execute", "last"},
+		{106 * time.Second, 90 * time.Second, "follow", "stage-regression"},
+		{107 * time.Second, 90 * time.Second, "execute", "resumed"},
 	} {
 		now = started.Add(step.elapsed)
 		f.configure(func(f *fixture) { f.stage, f.id = step.stage, step.id })
@@ -70,16 +71,75 @@ func TestRepeatKeepsOwnedRequestAcrossFollowExecuteAndIDRefresh(t *testing.T) {
 		if snapshot.count != 1 || len(snapshot.writes) != 1 || manager.State == nil {
 			t.Fatalf("%s at %s interrupted the owned request: %v", step.stage, step.elapsed, snapshot.writes)
 		}
-		if c.Started != started || c.Until != started.Add(30*time.Second) {
-			t.Fatalf("stage/id refresh changed the turn budget: started=%s until=%s", c.Started, c.Until)
+		if want := started.Add(step.stageStarted); c.Started != want {
+			t.Fatalf("stage start at %s: got %s, want %s", step.elapsed, c.Started, want)
 		}
 	}
-	for _, elapsed := range []time.Duration{30 * time.Second, 31 * time.Second} {
-		now = started.Add(elapsed)
-		pollStep(t, source, c)
-		if f.snapshot().count != 1 || len(f.snapshot().writes) != 2 || manager.State != nil {
-			t.Fatalf("exhausted window retained or restarted a request: %v", f.snapshot().writes)
-		}
+	f.configure(func(f *fixture) { f.active = false })
+	pollStep(t, source, c)
+	if manager.State != nil || len(f.snapshot().writes) != 2 {
+		t.Fatalf("turn end did not clean the original request: %v", f.snapshot().writes)
+	}
+}
+
+func TestExecuteCanRestartAfterTrafficAndFollowExpiry(t *testing.T) {
+	f := newFixture(t)
+	started := time.Now()
+	now := started
+	c, source, _ := repeatController(t, f, func() time.Time { return now })
+	f.configure(func(f *fixture) { f.stage = "follow" })
+	pollStep(t, source, c)
+	f.configure(func(f *fixture) { f.queue = f.queue[:1] })
+	now = started.Add(20 * time.Second)
+	pollStep(t, source, c)
+	if f.snapshot().count != 1 {
+		t.Fatal("follow reposted after its window ended")
+	}
+
+	now = started.Add(90 * time.Second)
+	f.configure(func(f *fixture) { f.stage = "execute" })
+	pollStep(t, source, c)
+	if f.snapshot().count != 2 {
+		t.Fatal("execute did not start a request after the follow request finished")
+	}
+
+	f.configure(func(f *fixture) { f.queue = f.queue[:1] })
+	now = started.Add(104 * time.Second)
+	pollStep(t, source, c)
+	if f.snapshot().count != 3 {
+		t.Fatal("execute did not replace the request within its own window")
+	}
+	f.configure(func(f *fixture) { f.queue = f.queue[:1] })
+	now = started.Add(107 * time.Second)
+	pollStep(t, source, c)
+	f.configure(func(f *fixture) { f.stage = "follow" })
+	pollStep(t, source, c)
+	f.configure(func(f *fixture) { f.stage = "execute" })
+	pollStep(t, source, c)
+	if f.snapshot().count != 3 {
+		t.Fatal("execute expiry or stage regression allowed a new request")
+	}
+}
+
+func TestExecuteCanStartImmediatelyAfterSkippedFollow(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now()
+	c, source, _ := repeatController(t, f, func() time.Time { return now })
+	f.configure(func(f *fixture) { f.stage = "follow" })
+	follow, err := source.Poll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.configure(func(f *fixture) { f.stage = "execute" })
+	if err = c.Step(context.Background(), follow); err != nil {
+		t.Fatal(err)
+	}
+	if f.snapshot().count != 0 {
+		t.Fatal("follow preflight posted after navigation entered execute")
+	}
+	pollStep(t, source, c)
+	if c.Started != now || f.snapshot().count != 1 {
+		t.Fatal("skipped follow attempt delayed the new execute window")
 	}
 }
 
@@ -196,10 +256,19 @@ func TestRepeatSlowCompletionCheckStillHonorsWindow(t *testing.T) {
 	}
 	sink := &slowQueuedSink{}
 	c := &Controller{Sink: sink, Hold: 20 * time.Millisecond, MaxDuration: 100 * time.Millisecond, FollowMeters: 150, Repeat: true, Clock: time.Now}
-	if err = RunMonitor(context.Background(), &NavigationSource{Client: nav, FollowMeters: 150}, c, 3, 30*time.Millisecond, nil); err != nil {
-		t.Fatalf("completion check expiry should normally end the window: %v", err)
+	observations := 0
+	log := func(event string, _ Object) {
+		if event == "carplay_snapshot" {
+			observations++
+			if !sink.active {
+				t.Fatal("completion check expiry stopped playback")
+			}
+		}
 	}
-	if duration := sink.stopped.Sub(sink.started); sink.starts != 1 || sink.active || duration < 90*time.Millisecond || duration > 400*time.Millisecond {
-		t.Fatalf("completion read escaped the turn window: starts=%d active=%v duration=%s", sink.starts, sink.active, duration)
+	if err = RunMonitor(context.Background(), &NavigationSource{Client: nav, FollowMeters: 150}, c, 3, 30*time.Millisecond, log); err != nil {
+		t.Fatalf("completion check expiry returned an error: %v", err)
+	}
+	if duration := sink.stopped.Sub(sink.started); observations != 3 || sink.starts != 1 || sink.active || duration < 120*time.Millisecond || duration > 500*time.Millisecond {
+		t.Fatalf("completion read escaped the stage window: starts=%d active=%v duration=%s", sink.starts, sink.active, duration)
 	}
 }

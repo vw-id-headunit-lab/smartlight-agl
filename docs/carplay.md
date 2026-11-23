@@ -8,7 +8,7 @@ BASE="$HOST/smartlight/"
 REGISTRY='http://[::1]:80'
 ./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" --iterations 10
 ./smartlight-agl carplay --base "$BASE" --nav-registry "$REGISTRY" --apply \
-  --interval 2 --hold 3 --max-duration 30 --state-dir /tmp/smartlight-carplay
+  --interval 2 --hold 3 --max-duration 15 --state-dir /tmp/smartlight-carplay
 # 或采用已确认的service URI，和registry必须二选一
 NAV_BASE='http://HEADUNIT_HOST:NAV_PORT/simplenavigation/'
 sh carplay_light.sh --base "$BASE" --nav-base "$NAV_BASE" --iterations 10
@@ -28,14 +28,18 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 
 默认execute或follow且距离≤当前阈值。默认车速自适应为speed(km/h)/3.6×12秒，
 限幅50–500米；车速未知回退150米。`--adaptive-follow=false`关闭自适应且不读取速度。
+首个灯效请求成功后冻结触发时的距离阈值并暂停车速读取，SmartLight 按自身节奏播放。
+周期内补发沿用冻结阈值。窗口到期或完成 one-shot 清理后，继续等待导航确认周期结束。
 `--follow-distance 0`保持仅execute并跳过车速读取。单位m/km/mi/yd/ft归一化；拒绝bool/负/非有限/字符串/
-未知单位。默认保留自己创建且仍在队列中的请求，follow切execute不撤销重建；按至少hold间隔
-只读检查准确队列身份，确认服务已移除后才清理记录并在仍eligible时重新POST。连续上下文+左右方向窗口不因id刷新
-重置。far/inactive/prepare/instruction或换来源/方向结束窗口；未观测到边界的同向转弯
-继续共享窗口。--one-shot选窗口一次；--follow-distance 0仅execute。
-默认成功请求的轮询、完成检查与等待受max-duration约束；one-shot和失败/跳过的尝试仍使用hold截止时间。
-窗口到期不再启动新POST。
-已在途POST仍按超时完成并保存Location后清理，网络/持久化/清理耗时会影响实际灯效时长。
+未知单位。
+
+首次满足 `follow` 距离阈值、首次进入 `execute` 时各计 15 秒。`--max-duration` 同时调整两段长度。
+开放窗口内按至少 `hold` 间隔检查准确的队列项，服务已移除时才补发。窗口到期后停止新发和补发，
+仍在队列中的灯效继续由 SmartLight 播放。阶段来回切换和元素 ID 刷新沿用已开始的计时。
+
+远离触发范围、导航停用、确认无下一机动、进入 `prepare` 或 `instruction`，或切换来源或方向时结束周期并恢复采样。
+未观测到边界的同向转弯继续共享周期。`--one-shot` 只在 `execute` 提示一次，按 `hold` 撤销。
+在途 POST 按 HTTP 超时完成。成功时保存 Location，并在导航结束或监控退出时清理对应请求。
 
 | 参数 | 默认 | 意义 |
 |---|---|---|
@@ -44,10 +48,10 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 | --apply | false | 创建请求，默认只读 |
 | --interval | 2 | 轮询延迟0.1–5秒，HTTP另占时间；低于2秒可能闪屏 |
 | --hold | 3 | 重复模式完成检查/重试最小间隔；one-shot保持时长，0.1–5秒，不是server TTL |
-| --max-duration | 30 | 连续语义窗口1–300秒，不随id刷新重置 |
+| --max-duration | 15 | 每个阶段的点亮和补发窗口，1–300 秒 |
 | --follow-distance | 150 | 固定/车速失败回退米阈值0–1000；0关闭follow策略 |
 | --adaptive-follow | true | 车速自适应；显式false关闭 |
-| --one-shot | false | 窗口一次 |
+| --one-shot | false | 每次转弯在 execute 提示一次 |
 | --timeout | 2 | 每请求0.1–15秒；GET运输最多3次 |
 | --iterations | 0 | 0持续，正数有界 |
 | --state-dir | TMPDIR/smartlight-carplay | 状态与原子目录锁 |
@@ -69,7 +73,8 @@ S2995方向：mainType13的32/64/96=left，160/192/224=right；25/35的64/192=le
 registry名称区分大小写，`Displayspeed`查不到此服务；其它车辆需重新查询实际URI。
 `--speed-unit auto`要求返回unit，支持km/h、mph、m/s及VIWI的kmPerHour、milesPerHour；
 也可显式传已确认的同义单位，仍拒绝km/h与mph冲突。独立凭据用speed-auth-file。
-失败/过期回退固定距离，阈值波动不会重置同转向窗口预算。完整参数见README双语教程。
+点亮前车速读取失败或过期时回退固定距离。暂停采样期间，`carplay_snapshot` 用
+`speed_sampling_paused` 标记冻结的阈值和车速。完整参数见README双语教程。
 代理访问前缀只用于HTTP请求地址；POST的purpose引用使用服务端路径，状态及清理保留访问路径。
 Ctrl-C/SIGTERM停止来源读取；有界POST先存Location，独立cleanup context撤销本桥项。
 慢GET受脉冲deadline限制；断电、SIGKILL、失联仍需独立恢复：

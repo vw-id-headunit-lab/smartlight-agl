@@ -15,19 +15,20 @@ units and invalid values, semantic max-window across id churn, one-shot/session
 reset, complete CLI polling/cleanup, cancellation and locks.
 
 Review regressions also cover snapshot-change polling cadence and cancellation,
-max-duration shorter than hold/interval, slow preflight at the window deadline,
+stage windows shorter than hold/interval, slow preflight at the stage deadline,
 service-side POST references through a path-rewriting proxy, and routes that
 stop or change their maneuver reference during the final pre-POST recheck.
-Repeat regressions keep one exact owned request through follow/execute and ID
-refreshes, replace it only after service-side removal, preserve hold pacing for
-replacement, clean confirmed navigation boundaries, and bound slow navigation
-and completion reads by the original turn window rather than the hold cadence.
+Repeat regressions keep the exact owned request through both stage deadlines,
+traffic delays and ID refreshes. They cover a new execute window after follow
+expires, replacement after confirmed removal, hold pacing, out-of-window queue
+checks, accepted in-flight POSTs, and cleanup at navigation boundaries.
 
 Speed tests cover default-on/explicit-off options, unit conversion and malformed
 samples, bounded read-only discovery and cached URIs, rate limits/fallback/age,
-speed changes without window rearming, and complete high/low-speed CarPlay mock
-requests with exact cleanup. All tests use local speed endpoints or explicitly
-disable adaptation; they do not contact the documented vehicle address.
+and complete high/low-speed CarPlay mock requests with exact cleanup. The monitor
+regression checks that an accepted request pauses sampling through replacement,
+sample expiry, and stage expiry, then resumes at a turn boundary.
+All tests use local speed endpoints or explicitly disable adaptation.
 
 CI records go-test-json and cross-builds static ARM64. Local outputs/hashes stay
 under ignored artifacts/dist. Cross-build is not target execution or light proof.

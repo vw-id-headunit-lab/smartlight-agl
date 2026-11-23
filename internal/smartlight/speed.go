@@ -286,6 +286,11 @@ type SpeedReader interface {
 	Read(context.Context) (float64, error)
 }
 
+type followSample struct {
+	meters float64
+	speed  *float64
+}
+
 // AdaptiveFollow is confined to the single monitor goroutine. Failed reads
 // invalidate the last sample immediately; an old high speed is never reused.
 type AdaptiveFollow struct {
@@ -297,6 +302,7 @@ type AdaptiveFollow struct {
 	nextRead, received              time.Time
 	speed                           float64
 	valid                           bool
+	frozen                          *followSample
 }
 
 func (a *AdaptiveFollow) now() time.Time {
@@ -310,7 +316,7 @@ func (a *AdaptiveFollow) Refresh(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if a.Fallback == 0 || a.now().Before(a.nextRead) {
+	if a.frozen != nil || a.Fallback == 0 || a.now().Before(a.nextRead) {
 		return nil
 	}
 	readCtx, cancel := context.WithTimeout(ctx, a.Timeout)
@@ -347,6 +353,9 @@ func (a *AdaptiveFollow) Refresh(ctx context.Context) error {
 }
 
 func (a *AdaptiveFollow) Current() (meters float64, speed *float64) {
+	if a.frozen != nil {
+		return a.frozen.meters, a.frozen.speed
+	}
 	if a.Fallback == 0 || !a.valid || a.now().Before(a.received) || a.now().Sub(a.received) >= a.MaxAge {
 		return a.Fallback, nil
 	}
@@ -364,6 +373,9 @@ func (a *AdaptiveFollow) Current() (meters float64, speed *float64) {
 func (a *AdaptiveFollow) Fields() Object {
 	meters, speed := a.Current()
 	fields := Object{"follow_distance_m": meters, "speed_available": speed != nil}
+	if a.frozen != nil {
+		fields["speed_sampling_paused"] = true
+	}
 	if speed != nil {
 		fields["speed_kph"] = *speed
 	}

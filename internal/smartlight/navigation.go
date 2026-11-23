@@ -99,14 +99,6 @@ type NavigationSource struct {
 	Adaptive     *AdaptiveFollow
 }
 
-func (s *NavigationSource) followMeters() float64 {
-	if s.Adaptive != nil {
-		meters, _ := s.Adaptive.Current()
-		return meters
-	}
-	return s.FollowMeters
-}
-
 func activeContext(row Object) bool {
 	return str(row["technology"]) == "appleCarPlay" && row["isRouteGuidanceActive"] == true
 }
@@ -185,20 +177,20 @@ func (s *NavigationSource) Poll(ctx context.Context) (*NavigationEvent, error) {
 	if err != nil {
 		return nil, err
 	}
-	if row["nextManeuver"] == nil {
-		return nil, ErrSnapshotChanged
-	}
-	maneuverURI, err := s.Client.Checked(reference(row["nextManeuver"]), "maneuvers")
+	maneuverURI, err := s.currentManeuverURI(row)
 	if err != nil {
 		return nil, err
 	}
-	maneuver, err := s.readElement(ctx, maneuverURI, "maneuvers")
-	if err != nil {
-		return nil, err
-	}
-	event, err := s.event(maneuver, contextURI, maneuverURI)
-	if err != nil {
-		return nil, err
+	var event *NavigationEvent
+	if maneuverURI != "" {
+		maneuver, err := s.readElement(ctx, maneuverURI, "maneuvers")
+		if err != nil {
+			return nil, err
+		}
+		event, err = s.event(maneuver, contextURI, maneuverURI)
+		if err != nil {
+			return nil, err
+		}
 	}
 	confirm, err := s.readElement(ctx, contextURI, "drivingContexts")
 	if err != nil {
@@ -211,7 +203,7 @@ func (s *NavigationSource) Poll(ctx context.Context) (*NavigationEvent, error) {
 	if err != nil {
 		return nil, err
 	}
-	confirmedURI, err := s.Client.Checked(reference(confirm["nextManeuver"]), "maneuvers")
+	confirmedURI, err := s.currentManeuverURI(confirm)
 	if err != nil {
 		return nil, err
 	}
@@ -221,67 +213,85 @@ func (s *NavigationSource) Poll(ctx context.Context) (*NavigationEvent, error) {
 	return event, nil
 }
 
-// StillCurrent revalidates semantic direction/proximity, allowing a refreshed
-// element id for the same turn but never trusting a different origin/resource.
+// StillCurrent reports whether the turn still qualifies for a light request.
 func (s *NavigationSource) StillCurrent(ctx context.Context, previous *NavigationEvent) (bool, error) {
+	sample, err := s.recheckTurn(ctx, previous)
+	return sample != nil, err
+}
+
+func (s *NavigationSource) followSample() followSample {
+	sample := followSample{meters: s.FollowMeters}
+	if s.Adaptive != nil {
+		sample.meters, sample.speed = s.Adaptive.Current()
+	}
+	return sample
+}
+
+// recheckTurn accepts an element ID refresh for the same semantic turn and
+// returns the threshold used to authorize the POST.
+func (s *NavigationSource) recheckTurn(ctx context.Context, previous *NavigationEvent) (*followSample, error) {
 	if s.Adaptive != nil {
 		if err := s.Adaptive.Refresh(ctx); err != nil {
-			return false, err
+			return nil, err
 		}
 	}
 	row, err := s.readElement(ctx, previous.ContextURI, "drivingContexts")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if !activeContext(row) {
-		return false, nil
+		return nil, nil
 	}
 	contextURI, err := s.Client.Element(row, "drivingContexts")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if contextURI != previous.ContextURI {
-		return false, nil
+		return nil, nil
 	}
 	uri, err := s.currentManeuverURI(row)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if uri == "" {
-		return false, nil
+		return nil, nil
 	}
 	maneuver, err := s.readElement(ctx, uri, "maneuvers")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	event, err := s.event(maneuver, contextURI, uri)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if event.Direction != previous.Direction || !event.Eligible(s.followMeters()) {
-		return false, nil
+	if event.Direction != previous.Direction || event.Stage != previous.Stage || !event.Eligible(s.followSample().meters) {
+		return nil, nil
 	}
 	// Navigation can stop or switch its reference while the maneuver is being
 	// read. Confirm this exact snapshot before allowing a new light request.
 	confirm, err := s.readElement(ctx, contextURI, "drivingContexts")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if !activeContext(confirm) {
-		return false, nil
+		return nil, nil
 	}
 	confirmedContext, err := s.Client.Element(confirm, "drivingContexts")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if confirmedContext != contextURI {
-		return false, nil
+		return nil, nil
 	}
 	confirmedURI, err := s.currentManeuverURI(confirm)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return confirmedURI == uri && event.Eligible(s.followMeters()), nil
+	sample := s.followSample()
+	if confirmedURI != uri || !event.Eligible(sample.meters) {
+		return nil, nil
+	}
+	return &sample, nil
 }
 
 // Empty references are normal while a route is stopping or being recalculated.
@@ -392,8 +402,17 @@ func (s *NavigationSink) Start(ctx context.Context, event *NavigationEvent) (boo
 	if err != nil {
 		return false, err
 	}
-	s.Manager.BeforePost = func(ctx context.Context) (bool, error) { return s.Source.StillCurrent(ctx, event) }
+	adaptive := s.Source.Adaptive
+	var sample *followSample
+	s.Manager.BeforePost = func(ctx context.Context) (bool, error) {
+		var err error
+		sample, err = s.Source.recheckTurn(ctx, event)
+		return sample != nil, err
+	}
 	ok, err := s.Manager.Start(ctx, Selector{Direction: event.Direction}, filepath.Join(s.Directory.Path, "carplay-"+id+".json"))
+	if ok && sample != nil && adaptive != nil && adaptive.Fallback > 0 && adaptive.frozen == nil {
+		adaptive.frozen = sample
+	}
 	var postErr *PostFailure
 	if !errors.As(err, &postErr) {
 		return ok, err
@@ -440,12 +459,13 @@ type Controller struct {
 	FollowMeters       float64
 	Repeat             bool
 	Clock              func() time.Time
-	Until, Started     time.Time
+	HoldUntil, Started time.Time
 	NextCheck          time.Time
 	Context, Direction string
 	Fired              bool
 	Adaptive           *AdaptiveFollow
 	WindowFollowMeters float64
+	executeSeen        bool
 }
 
 func (c *Controller) followMeters() float64 {
@@ -460,21 +480,9 @@ func (c *Controller) Expire(ctx context.Context) error {
 	if err := c.Sink.Stop(ctx); err != nil {
 		return err
 	}
-	c.Until = time.Time{}
+	c.HoldUntil = time.Time{}
 	c.NextCheck = time.Time{}
 	return nil
-}
-
-// Only a pending pulse/cadence has a deadline. Once it is cleaned, keep polling
-// for a turn boundary instead of repeatedly polling with an expired window.
-func (c *Controller) pulseDeadline() time.Time {
-	deadline := c.Until
-	if !deadline.IsZero() && !c.Started.IsZero() {
-		if window := c.Started.Add(c.MaxDuration); window.Before(deadline) {
-			deadline = window
-		}
-	}
-	return deadline
 }
 
 func (c *Controller) expireIndependent() error {
@@ -484,58 +492,72 @@ func (c *Controller) expireIndependent() error {
 }
 
 func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
-	now := c.Clock()
-	if deadline := c.pulseDeadline(); !deadline.IsZero() && !now.Before(deadline) {
+	if !c.HoldUntil.IsZero() && !c.Clock().Before(c.HoldUntil) {
 		if err := c.Expire(ctx); err != nil {
 			return err
 		}
 	}
 	limit := c.followMeters()
-	if !event.Eligible(limit) {
+	sameTurn := event != nil && event.ContextURI == c.Context && event.Direction == c.Direction
+	eligible := event.Eligible(limit)
+	if !sameTurn || !eligible {
 		if err := c.Expire(ctx); err != nil {
 			return err
 		}
-		// Slowing down, an expired speed sample, or a read failure can reduce
-		// the threshold. Stop the pulse, but do not rearm the same turn's
-		// one-shot/max-duration budget solely because speed crossed a boundary.
-		if c.Adaptive != nil && !c.Started.IsZero() && event != nil && event.ContextURI == c.Context && event.Direction == c.Direction && event.Stage == "follow" && event.Distance != nil && *event.Distance <= c.WindowFollowMeters {
+		wasFrozen := c.Adaptive != nil && c.Adaptive.frozen != nil
+		// An attempt that did not start playback can still spend the turn's
+		// budget. Speed changes alone should not rearm it.
+		if sameTurn && c.Adaptive != nil && !wasFrozen && !c.Started.IsZero() && event.Eligible(c.WindowFollowMeters) {
 			return nil
 		}
-		c.Context = ""
-		c.Direction = ""
+		c.Context, c.Direction = "", ""
 		c.Started = time.Time{}
-		c.Fired = false
+		c.Fired, c.executeSeen = false, false
 		c.WindowFollowMeters = 0
-		return nil
-	}
-	// Window follows the semantic turn. Refreshed id/raw direction variants do
-	// not reset max-duration. A confirmed far/inactive/different turn does.
-	if event.ContextURI != c.Context || event.Direction != c.Direction {
-		if err := c.Expire(ctx); err != nil {
-			return err
+		if wasFrozen {
+			c.Adaptive.frozen = nil
+			// A different turn can appear in the same snapshot as the old
+			// turn's boundary. Resume live adaptation before handling it.
+			if !sameTurn && event != nil && event.Direction != "" {
+				if err := c.Adaptive.Refresh(ctx); err != nil {
+					return err
+				}
+				limit = c.followMeters()
+				eligible = event.Eligible(limit)
+			}
 		}
-		c.Context = event.ContextURI
-		c.Direction = event.Direction
-		c.Started = time.Time{}
-		c.Fired = false
-		c.WindowFollowMeters = 0
+		if !eligible {
+			return nil
+		}
+		c.Context, c.Direction = event.ContextURI, event.Direction
 	}
 	if limit > c.WindowFollowMeters {
 		c.WindowFollowMeters = limit
 	}
-	// Revoking an old pulse can take time; do not use the pre-cleanup clock
-	// reading when deciding whether a new request still fits in the window.
-	now = c.Clock()
-	if !c.Started.IsZero() && now.Sub(c.Started) >= c.MaxDuration {
-		return c.Expire(ctx)
+	now := c.Clock()
+	executing := event.Stage == "execute"
+	if executing && !c.executeSeen {
+		c.executeSeen = true
+		c.Started = now
+		// A skipped follow attempt cannot delay the first execute attempt.
+		c.HoldUntil = time.Time{}
 	}
-	if !c.Until.IsZero() {
-		if c.NextCheck.IsZero() || now.Before(c.NextCheck) {
+	// Once execute begins, a return to follow cannot open a request window.
+	if !executing && (c.executeSeen || !c.Repeat) {
+		return nil
+	}
+	if c.Started.IsZero() {
+		c.Started = now
+	}
+	windowEnd := c.Started.Add(c.MaxDuration)
+	if !now.Before(windowEnd) || !c.HoldUntil.IsZero() || (c.Fired && !c.Repeat) {
+		return nil
+	}
+	if !c.NextCheck.IsZero() {
+		if now.Before(c.NextCheck) {
 			return nil
 		}
-		// Repeating navigation keeps an owned request until the service removes
-		// it. The hold cadence schedules read-only completion checks, not DELETE.
-		windowEnd := c.Started.Add(c.MaxDuration)
+		// Check for service-side completion only while a replacement can fit.
 		checkCtx, cancel := context.WithTimeout(ctx, windowEnd.Sub(c.Clock()))
 		queued, err := c.Sink.Queued(checkCtx)
 		windowExpired := errors.Is(checkCtx.Err(), context.DeadlineExceeded) || !c.Clock().Before(windowEnd)
@@ -544,7 +566,7 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 			return ctx.Err()
 		}
 		if windowExpired {
-			return c.expireIndependent()
+			return nil
 		}
 		if err != nil {
 			return err
@@ -562,16 +584,9 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 			return nil
 		}
 	}
-	if c.Fired && !c.Repeat {
-		return nil
-	}
-	if c.Started.IsZero() {
-		c.Started = now
-	}
 	c.Fired = true
-	windowEnd := c.Started.Add(c.MaxDuration)
-	// This deadline bounds preflight as well as source reads. An already-sent
-	// POST may finish independently to preserve its receipt, then is revoked.
+	// Bound preflight and rechecks. An already-sent POST finishes independently
+	// so an accepted request can be tracked until navigation ends.
 	startCtx, cancel := context.WithTimeout(ctx, windowEnd.Sub(c.Clock()))
 	started, err := c.Sink.Start(startCtx, event)
 	windowExpired := errors.Is(startCtx.Err(), context.DeadlineExceeded) || !c.Clock().Before(windowEnd)
@@ -583,22 +598,13 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if windowExpired {
-		// Some HTTP body-read errors do not wrap context.DeadlineExceeded.
-		// Expiry is a normal end to this window, not a monitor restart trigger.
-		return c.expireIndependent()
-	}
-	if err != nil {
+	if err != nil && !windowExpired {
 		return err
 	}
-	// Failed/ignored/skipped attempts and one-shot pulses keep the hold bound.
-	c.Until = c.Clock().Add(c.Hold)
 	if started && c.Repeat {
-		c.NextCheck = c.Until
-		c.Until = windowEnd
-	}
-	if windowEnd.Before(c.Until) {
-		c.Until = windowEnd
+		c.NextCheck = c.Clock().Add(c.Hold)
+	} else if started || !windowExpired {
+		c.HoldUntil = c.Clock().Add(c.Hold)
 	}
 	return nil
 }
@@ -617,7 +623,7 @@ func RunMonitor(ctx context.Context, source *NavigationSource, controller *Contr
 		if e := ctx.Err(); e != nil {
 			return e
 		}
-		deadline := controller.pulseDeadline()
+		deadline := controller.HoldUntil
 		if !deadline.IsZero() && !controller.Clock().Before(deadline) {
 			if e := cleanup(); e != nil {
 				return e
@@ -666,7 +672,7 @@ func RunMonitor(ctx context.Context, source *NavigationSource, controller *Contr
 			break
 		}
 		pause := interval
-		if deadline := controller.pulseDeadline(); !deadline.IsZero() {
+		if deadline := controller.HoldUntil; !deadline.IsZero() {
 			if remaining := deadline.Sub(controller.Clock()); remaining < pause {
 				pause = remaining
 			}
