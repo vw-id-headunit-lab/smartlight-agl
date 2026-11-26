@@ -38,11 +38,72 @@
 
 ## 触发规则
 
-- 仅跟随当前 CarPlay 转向：`execute` 阶段直接提示，`follow` 阶段需进入距离阈值。阈值默认按当前车速乘以 12 秒计算，限制在 50–500 米；车速不可用时回退到 150 米。
+- 仅跟随当前 CarPlay 转向：`execute` 阶段直接提示，`follow` 阶段需进入距离阈值。默认按车速分段计算，90 km/h 对应 500 米、120 km/h 对应 1 公里、≥150 km/h 对应 2 公里，范围为 50–2000 米；车速不可用时回退到 150 米。
 - 首次灯效请求成功后，使用 SmartLight 原有播放节奏，固定本次转弯的距离阈值并暂停读取车速，直到导航确认转弯周期结束。
 - 首次满足 `follow` 距离阈值、首次进入 `execute` 时各开一个默认 15 秒的点亮和补发窗口。默认至少间隔 3 秒检查队列，确认服务已移除本次请求才补发。窗口到期或阶段切换时，保留仍在队列中的灯效。
 - `--one-shot` 把唯一一次提示留给 `execute`，默认保持 3 秒后撤销。`--follow-distance 0` 也仅在 `execute` 提示。
 - 若默认车速入口不可用，从车机注册中心查找 `DisplaySpeed`（区分大小写），将确认的集合 URI 通过 `--speed-uri` 传给预演和联动命令。已知导航 URI、独立鉴权和其他参数见 [CarPlay 配置](docs/carplay.md)。
+
+### 默认车速自适应
+
+| 当前车速 | 默认 `follow` 触发距离阈值 |
+|---|---|
+| 0–15 km/h | 50 米（下限） |
+| 30 km/h | 100 米 |
+| 60 km/h | 200 米 |
+| 90 km/h | 500 米 |
+| 120 km/h | 1 公里 |
+| ≥150 km/h | 2 公里（上限） |
+
+60 km/h 及以下按 `车速(km/h) / 3.6 × 12 秒` 计算，最低 50 米；60–150 km/h 在表中相邻车速点之间线性插值，≥150 km/h 使用 2000 米。
+`--follow-lead-time` 按 `参数值 / 12` 缩放这条距离曲线，再应用 `--follow-min-distance` 和 `--follow-max-distance` 上下限；它不代表所有车速下都提前相同秒数。
+
+这是可调整的项目策略，不是原厂规则，也不识别道路类型；相同车速在不同道路类型下使用相同阈值。
+默认只读发现入口为 `http://[fd53:7cb8:383:3::99]:8080/`。程序跟随 `Displayspeed` 下返回的 URI，读取 `type=velocityPrimary` 的 `currentValue`，不猜测资源名称或 UUID。
+`--speed-unit auto` 要求响应明确提供 `unit=km/h|mph|m/s`，也接受 VIWI 枚举 `kmPerHour`（km/h）和 `milesPerHour`（mph）；单位缺失或未知时回退到固定距离。
+配置单位与响应单位会先归一化别名再比较，仍会拒绝 km/h 与 mph 等单位冲突。
+
+2026-11-17 的实车只读检查发现，默认入口连接超时。本机注册中心查询 `GET http://[::1]/?name=DisplaySpeed` 返回 `::73:29721/DisplaySpeed/`，其返回的车速集合为 `/DisplaySpeed/speeds/`，单位为 `kmPerHour`。
+注册名称区分大小写，`name=Displayspeed` 无匹配结果。`boot-start.sh` 已使用这辆车确认的集合；其他车辆需重新查询注册中心并跟随实际返回的服务 URI。
+
+确认车速 URI 和单位后，可跳过发现，先做只读预演：
+
+```sh
+SPEED_URI='http://[fd53:7cb8:383:3::73]:29721/DisplaySpeed/speeds/'
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --speed-uri "$SPEED_URI" --iterations 10
+```
+
+这辆车可使用默认 `auto`，显式指定 `--speed-unit km/h` 也能匹配 `kmPerHour`。程序同样支持 `mph` 和 `m/s`，但必须与确认的单位一致。
+独立车速凭据通过 `--speed-auth-file` 提供，不继承灯效或导航凭据。`adaptive_follow` 和 `carplay_snapshot` 日志中的 `speed_available`、`speed_kph`、`follow_distance_m` 分别表示车速是否可用、车速和当前距离阈值。
+本次转弯已有成功请求时，`speed_sampling_paused` 标记保留的车速和阈值。
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `--speed-base` | 上述 `::99:8080` 入口 | 未指定 `--speed-uri` 时使用的服务树 |
+| `--speed-unit` | `auto` | 读取响应单位，或指定已确认的单位 |
+| `--follow-lead-time` | 12 秒 | 按参数值 / 12 缩放默认距离曲线，范围 1–30 秒 |
+| `--follow-min-distance` / `--follow-max-distance` | 50 / 2000 米 | 自适应距离上下限，范围 1–2000 米 |
+| `--speed-interval` | 2 秒 | 一次车速读取完成后的最短等待时间，至少 1 秒 |
+| `--speed-timeout` | 1 秒 | 包含 GET 重试的车速读取或发现总预算 |
+| `--speed-max-age` | 5 秒 | 按本地接收时间计算的有效期，至少为 interval + timeout |
+
+读取失败会立即使旧车速失效，并回退到固定距离。新鲜度按本地接收时间计算，**不能证明上游传感器仍在更新**。
+首次请求成功前，车速决定 `follow` 是否满足触发距离；完成检查仍在各阶段的请求窗口内按既定间隔进行。
+
+关闭自适应，使用固定 150 米阈值（不再请求车速）：
+
+```sh
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --adaptive-follow=false --follow-distance 150 --iterations 10
+```
+
+仅在 `execute` 阶段提示一次：
+
+```sh
+sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
+  --apply --follow-distance 0 --one-shot --state-dir /tmp/smartlight-carplay
+```
 
 ## 停止与恢复
 
