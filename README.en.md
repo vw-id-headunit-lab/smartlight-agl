@@ -127,6 +127,7 @@ are not hard-coded.
 
 ### Default trigger policy
 
+- When the head unit does not publish `stage`, derive it from the distance: **at or below 50 meters is `execute`, otherwise `follow`**. Some units (HCN1.1.134 observed) return an empty string even at zero distance; units that provide `stage` keep their existing semantics.
 - Trigger during `execute`, or during `follow` with a valid remaining distance at or below the current threshold.
 - **Speed adaptation is enabled by default**: a piecewise speed curve gives **500 meters at 90 km/h**, **1 kilometer at 120 km/h**, and **2 kilometers at ≥150 km/h**, clamped to **50–2000 meters**; unavailable speed falls back to **150 meters**.
 - When SmartLight accepts the first request, keep the trigger threshold and pause speed reads until navigation confirms the turn has ended. SmartLight controls playback timing.

@@ -112,23 +112,36 @@ func (s *NavigationSource) event(row Object, contextURI, maneuverURI string) (*N
 	if id == "" {
 		return nil, errors.New("current maneuver requires id")
 	}
+	var distance *float64
+	if value, present := row["distance"]; present && value != nil {
+		meters, err := DistanceMeters(value, row["distanceUnit"])
+		if err != nil {
+			return nil, err
+		}
+		distance = &meters
+	}
 	stage := str(row["stage"])
 	if !contains([]string{"follow", "prepare", "instruction", "execute"}, stage) {
-		return nil, errors.New("stage must be a simplenavigation string")
+		// Some head units never publish a stage: HCN1.1.134 returns an empty
+		// string even at zero meters from the turn. Rejecting that stops the
+		// monitor before it can issue any request, so derive the stage from the
+		// remaining distance instead. Direction filtering, dedupe, hold windows
+		// and state handling are unchanged.
+		if distance == nil {
+			return nil, ErrSnapshotChanged
+		}
+		if *distance <= 50 {
+			stage = "execute"
+		} else {
+			stage = "follow"
+		}
 	}
 	m, mok := integer(row["mainType"])
 	d, dok := integer(row["directionType"])
 	if !mok || !dok {
 		return nil, errors.New("mainType/directionType require nonnegative integer platform values")
 	}
-	e := &NavigationEvent{ContextURI: contextURI, ManeuverURI: maneuverURI, ID: id, Direction: TurnDirection(row["mainType"], row["directionType"]), Stage: stage, MainType: m, DirectionType: d}
-	if value, present := row["distance"]; present && value != nil {
-		meters, err := DistanceMeters(value, row["distanceUnit"])
-		if err != nil {
-			return nil, err
-		}
-		e.Distance = &meters
-	}
+	e := &NavigationEvent{ContextURI: contextURI, ManeuverURI: maneuverURI, ID: id, Direction: TurnDirection(row["mainType"], row["directionType"]), Stage: stage, MainType: m, DirectionType: d, Distance: distance}
 	if stage == "follow" && e.Distance == nil {
 		return nil, errors.New("follow stage requires distance and unit")
 	}
