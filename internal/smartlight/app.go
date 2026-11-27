@@ -87,7 +87,7 @@ func parseOptions(args []string, stderr io.Writer) (Options, error) {
 		fs.StringVar(&o.SpeedBase, "speed-base", DefaultSpeedBase, "VIWI service tree used when speed-uri is absent; GET only")
 		fs.StringVar(&o.SpeedUnit, "speed-unit", "auto", "auto requires response unit; or confirmed km/h, mph, m/s")
 		fs.StringVar(&o.SpeedAuthFile, "speed-auth-file", "", "speed-only Authorization file; no credential inheritance")
-		fs.Float64Var(&o.FollowLead, "follow-lead-time", defaultFollowLead, "scale the adaptive distance curve by seconds / 12, 1..30")
+		fs.Float64Var(&o.FollowLead, "follow-lead-time", defaultFollowLead, "lead seconds through 90 km/h, scaling higher-speed distances proportionally, 1..30")
 		fs.Float64Var(&o.FollowMin, "follow-min-distance", defaultFollowMin, "adaptive minimum distance meters, 1..2000")
 		fs.Float64Var(&o.FollowMax, "follow-max-distance", defaultFollowMax, "adaptive maximum distance meters, min..2000")
 		fs.Float64Var(&o.SpeedInterval, "speed-interval", 2, "minimum delay after speed read seconds, 1..30")

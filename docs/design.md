@@ -61,10 +61,10 @@ Speed adaptation is enabled by default but can be disabled with
 `--adaptive-follow=false`. A read-only VIWI tree discovers Displayspeed links on
 the configured origin, or an explicit speed URI bypasses discovery. Only the
 unambiguous velocityPrimary.currentValue is accepted, with response/configured
-units normalized to km/h. The default distance curve uses speed/3.6*12s through
-60 km/h, then linearly interpolates 60/200, 90/500, 120/1000 and 150/2000
-(km/h and meters); speeds at or above 150 km/h use 2000m. Follow-lead-time scales
-the curve by value/12 before applying the configured limits (default 50..2000m,
+units normalized to km/h. The default distance curve uses speed/3.6*20s through
+90 km/h, then linearly interpolates 90/500, 120/1000 and 150/2000
+(km/h and meters). Speeds at or above 150 km/h use 2000m. Follow-lead-time scales
+the curve by value/20 before applying the configured limits (default 50..2000m,
 supported 1..2000m). Invalid/unavailable/stale samples fall back to the fixed follow-distance. Reads
 are rate-limited and bounded by the speed budget and the caller's deadline.
 Speed credentials are independent of navigation and lighting credentials.

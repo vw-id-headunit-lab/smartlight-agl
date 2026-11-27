@@ -1,14 +1,20 @@
-# SmartLight via CarPlay — CarPlay 导航联动 ID.Light
+# SmartLight — 仪表盘导航联动 ID.Light
 
 [English](README.en.md)
 
-将 iPhone 高德等 CarPlay 导航的当前转向提示同步到 ID.Light 灯带。程序读取车机已有的 `simplenavigation` 服务，再通过 SmartLight 请求灯效；不抓屏、不解析原始 iAP2，也不修改固件或手机 App。
+本项目最初针对 CarPlay 导航适配，但用途不局限于 CarPlay，也可用于 CarLife 等能向仪表盘提供导航箭头的场景，将当前转向提示同步到 ID.Light 灯带。
 
-**Go 版已通过实车联动测试。** 不同车机的服务地址可能不同，首次部署请在停车状态先做只读预演。车机独立运行的 Android 导航不属于 CarPlay 数据源。
+**使用前提：仪表盘能够显示当前导航的转向箭头，且车机已有的 `simplenavigation` 服务能提供程序可识别的导航数据。** 程序读取这些数据，再通过 SmartLight 请求灯效；不抓屏、不解析原始 iAP2，也不修改固件或手机 App。仅在中控屏显示导航、未向仪表盘提供导航箭头时，无法通过本程序联动。
+
+**部分情况下，CarLife 可能不会联动仪表盘导航箭头。如果灯光不亮，请先留意仪表盘导航箭头是否正常显示、是否随当前导航更新。**
+
+当前实现按 `technology=appleCarPlay` 选择导航上下文；CarLife 等来源需要由车机提供兼容上下文，若使用其他 `technology` 值则仍需适配。命令、脚本和日志中的 `carplay` 名称沿用最初适配时的命名。
+
+**程序已通过实车联动测试。** 不同车机的服务地址和导航数据兼容性可能不同，首次部署请在停车状态先做只读预演。
 
 ## 快速开始
 
-1. 从 [GitHub Releases](https://github.com/vw-id-headunit-lab/smartlight-agl/releases) 下载 `smartlight-agl-go-linux-arm64.tar.gz` 和同名 `.sha256` 校验文件。也可在开发机用 Go 1.22+ 执行 `go run ./cmd/build-release`，产物在 `dist/`。车机无需 Python、curl 或 Go 编译器。
+1. 从 [GitHub Releases](https://github.com/vw-id-headunit-lab/smartlight-agl/releases) 下载 `smartlight-agl-go-linux-arm64.tar.gz` 和同名 `.sha256` 校验文件。也可在开发机用 Go 1.22+ 执行 `go run ./cmd/build-release`，产物在 `dist/`。车机无需额外安装运行环境或编译器。
 2. 校验后将运行包复制到 AGL 车机，并解压。下文命令在解压出的目录中运行：
 
    ```sh
@@ -17,7 +23,7 @@
    cd smartlight-agl
    ```
 
-3. 在车机 HMI 中开启 ID.Light 导航提示，连接 CarPlay 并开始导航。设置下列地址（`BASE` 按目标车机确认的地址修改），只读检查 10 轮：
+3. 在车机 HMI 中开启 ID.Light 导航提示，连接 CarPlay 或符合上述兼容条件的 CarLife 并开始导航，确认仪表盘已显示导航箭头。设置下列地址（`BASE` 按目标车机确认的地址修改），只读检查 10 轮：
 
    ```sh
    BASE='http://[fd53:7cb8:383:3::73]:49520/smartlight/'
@@ -38,7 +44,7 @@
 
 ## 触发规则
 
-- 仅跟随当前 CarPlay 转向：`execute` 阶段直接提示，`follow` 阶段需进入距离阈值。默认按车速分段计算，90 km/h 对应 500 米、120 km/h 对应 1 公里、≥150 km/h 对应 2 公里，范围为 50–2000 米；车速不可用时回退到 150 米。
+- 仅跟随当前导航转向。`execute` 阶段直接提示，`follow` 阶段达到距离阈值时预告。90 km/h 及以下默认按提前 20 秒计算，最低 50 米。120 km/h 对应 1 公里，≥150 km/h 对应 2 公里。车速不可用时回退到 150 米。
 - 首次灯效请求成功后，使用 SmartLight 原有播放节奏，固定本次转弯的距离阈值并暂停读取车速，直到导航确认转弯周期结束。
 - 首次满足 `follow` 距离阈值、首次进入 `execute` 时各开一个默认 15 秒的点亮和补发窗口。默认至少间隔 3 秒检查队列，确认服务已移除本次请求才补发。窗口到期或阶段切换时，保留仍在队列中的灯效。
 - `--one-shot` 把唯一一次提示留给 `execute`，默认保持 3 秒后撤销。`--follow-distance 0` 也仅在 `execute` 提示。
@@ -48,15 +54,17 @@
 
 | 当前车速 | 默认 `follow` 触发距离阈值 |
 |---|---|
-| 0–15 km/h | 50 米（下限） |
-| 30 km/h | 100 米 |
-| 60 km/h | 200 米 |
+| 0–9 km/h | 50 米（下限） |
+| 15 km/h | 约 83 米 |
+| 30 km/h | 约 167 米 |
+| 50 km/h | 约 278 米 |
+| 60 km/h | 约 333 米 |
 | 90 km/h | 500 米 |
 | 120 km/h | 1 公里 |
 | ≥150 km/h | 2 公里（上限） |
 
-60 km/h 及以下按 `车速(km/h) / 3.6 × 12 秒` 计算，最低 50 米；60–150 km/h 在表中相邻车速点之间线性插值，≥150 km/h 使用 2000 米。
-`--follow-lead-time` 按 `参数值 / 12` 缩放这条距离曲线，再应用 `--follow-min-distance` 和 `--follow-max-distance` 上下限；它不代表所有车速下都提前相同秒数。
+90 km/h 及以下按 `车速(km/h) / 3.6 × 20 秒` 计算，最低 50 米。90–150 km/h 在表中相邻车速点之间线性插值，≥150 km/h 使用 2000 米。
+`--follow-lead-time` 设置 90 km/h 及以下的提前秒数，并按 `参数值 / 20` 缩放高速段距离。最后应用 `--follow-min-distance` 和 `--follow-max-distance` 上下限。
 
 这是可调整的项目策略，不是原厂规则，也不识别道路类型；相同车速在不同道路类型下使用相同阈值。
 默认只读发现入口为 `http://[fd53:7cb8:383:3::99]:8080/`。程序跟随 `Displayspeed` 下返回的 URI，读取 `type=velocityPrimary` 的 `currentValue`，不猜测资源名称或 UUID。
@@ -82,7 +90,7 @@ sh carplay_light.sh --base "$BASE" --nav-registry "$REGISTRY" \
 |---|---|---|
 | `--speed-base` | 上述 `::99:8080` 入口 | 未指定 `--speed-uri` 时使用的服务树 |
 | `--speed-unit` | `auto` | 读取响应单位，或指定已确认的单位 |
-| `--follow-lead-time` | 12 秒 | 按参数值 / 12 缩放默认距离曲线，范围 1–30 秒 |
+| `--follow-lead-time` | 20 秒 | 90 km/h 及以下的提前秒数，范围 1–30 秒，高速段按比例缩放 |
 | `--follow-min-distance` / `--follow-max-distance` | 50 / 2000 米 | 自适应距离上下限，范围 1–2000 米 |
 | `--speed-interval` | 2 秒 | 一次车速读取完成后的最短等待时间，至少 1 秒 |
 | `--speed-timeout` | 1 秒 | 包含 GET 重试的车速读取或发现总预算 |
