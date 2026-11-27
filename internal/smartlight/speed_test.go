@@ -102,7 +102,8 @@ func TestAdaptiveDistanceClampsAndFallback(t *testing.T) {
 		t.Fatal("startup must use fixed fallback")
 	}
 	for _, tc := range []struct{ speed, meters float64 }{
-		{0, 50}, {15, 50}, {30, 100}, {60, 200}, {75, 350}, {90, 500},
+		{0, 50}, {9, 50}, {15, 83.333333333}, {30, 166.666666667}, {50, 277.777777778},
+		{60, 333.333333333}, {75, 416.666666667}, {90, 500},
 		{105, 750}, {120, 1000}, {135, 1500}, {150, 2000}, {180, 2000}, {300, 2000},
 	} {
 		value = tc.speed
@@ -111,8 +112,8 @@ func TestAdaptiveDistanceClampsAndFallback(t *testing.T) {
 			t.Fatal(err)
 		}
 		meters, speed := a.Current()
-		if meters != tc.meters || speed == nil || *speed != tc.speed {
-			t.Fatalf("speed=%v: distance=%v speed=%v", tc.speed, meters, speed)
+		if math.Abs(meters-tc.meters) > 1e-6 || speed == nil || *speed != tc.speed {
+			t.Fatalf("speed=%v: distance=%v want=%v speed=%v", tc.speed, meters, tc.meters, speed)
 		}
 	}
 	before := count
@@ -143,10 +144,11 @@ func TestAdaptiveDistanceTuning(t *testing.T) {
 		name                          string
 		speed, lead, min, max, meters float64
 	}{
-		{"shorter-lead", 120, 6, 50, 2000, 500},
-		{"longer-lead", 90, 24, 50, 2000, 1000},
-		{"minimum", 30, 12, 250, 2000, 250},
-		{"maximum", 150, 12, 50, 1500, 1500},
+		{"shorter-lead", 120, 10, 50, 2000, 500},
+		{"low-speed-lead", 36, 12, 50, 2000, 120},
+		{"longer-lead", 90, 24, 50, 2000, 600},
+		{"minimum", 30, 20, 250, 2000, 250},
+		{"maximum", 150, 20, 50, 1500, 1500},
 		{"scaled-maximum", 150, 24, 50, 2000, 2000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,7 +354,7 @@ func TestAdaptiveSpeedIsPausedForAppliedTurn(t *testing.T) {
 				if reads == 1 {
 					return 120, nil
 				}
-				return 30, nil
+				return 36, nil
 			}), controller.Clock)
 			source.Adaptive, controller.Adaptive = adaptive, adaptive
 
@@ -406,7 +408,7 @@ func TestAdaptiveSpeedIsPausedForAppliedTurn(t *testing.T) {
 						t.Fatalf("turn boundary retained the paused sampling or posted: fields=%v posts=%d", fields, f.snapshot().count)
 					}
 					if repeat {
-						if reads != 2 || fields["follow_distance_m"] != 100.0 {
+						if reads != 2 || fields["follow_distance_m"] != 200.0 {
 							t.Fatalf("opposite turn did not use live speed: reads=%d fields=%v", reads, fields)
 						}
 					} else {
@@ -415,7 +417,7 @@ func TestAdaptiveSpeedIsPausedForAppliedTurn(t *testing.T) {
 						})
 					}
 				case 6:
-					if reads != 2 || fields["follow_distance_m"] != 100.0 || f.snapshot().count != 2 {
+					if reads != 2 || fields["follow_distance_m"] != 200.0 || f.snapshot().count != 2 {
 						t.Fatalf("turn after confirmed absence did not rearm: reads=%d fields=%v posts=%d", reads, fields, f.snapshot().count)
 					}
 				}
@@ -464,7 +466,7 @@ func TestAdaptiveSpeedDoesNotRearmUnappliedTurnWindow(t *testing.T) {
 func TestAdaptiveFollowCLIOptionsAndDefaults(t *testing.T) {
 	base := []string{"carplay", "--base", "http://fixture/smartlight/", "--nav-base", "http://fixture/navigation/"}
 	o, err := parseOptions(base, io.Discard)
-	if err != nil || !o.AdaptiveFollow || o.SpeedBase != DefaultSpeedBase || o.SpeedUnit != "auto" || o.MaxDuration != 15 || o.FollowLead != 12 || o.FollowMin != 50 || o.FollowMax != 2000 {
+	if err != nil || !o.AdaptiveFollow || o.SpeedBase != DefaultSpeedBase || o.SpeedUnit != "auto" || o.MaxDuration != 15 || o.FollowLead != 20 || o.FollowMin != 50 || o.FollowMax != 2000 {
 		t.Fatalf("unexpected CarPlay defaults: %#v %v", o, err)
 	}
 	o, err = parseOptions(append(append([]string{}, base...), "--adaptive-follow=false"), io.Discard)
@@ -488,7 +490,7 @@ func TestAdaptiveCarPlayCLIDistanceBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		speed, meters float64
-	}{{"90-kph", 90, 500}, {"120-kph", 120, 1000}, {"150-kph", 150, 2000}, {"180-kph", 180, 2000}} {
+	}{{"36-kph", 36, 200}, {"90-kph", 90, 500}, {"120-kph", 120, 1000}, {"150-kph", 150, 2000}, {"180-kph", 180, 2000}} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, boundary := range []struct {
 				name     string

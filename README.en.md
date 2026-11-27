@@ -1,24 +1,38 @@
-# SmartLight via CarPlay — CarPlay navigation to ID.Light
+# SmartLight — Instrument-cluster navigation to ID.Light
 
 [简体中文](README.md) | [English](README.en.md)
 
-Connect **turn guidance from iPhone CarPlay navigation, including AMap, to the ID.Light strip**.
-The program reads the head unit's existing `simplenavigation` service and requests effects through
-SmartLight. It does not capture the display, decode raw iAP2, or modify the phone app.
+Originally adapted for CarPlay navigation, this project can also be used with CarLife and other
+sources that supply navigation arrows to the instrument cluster. It synchronizes current turn
+guidance with the ID.Light strip.
 
-**Normal setup: deploy the Go runtime → configure endpoints → dry-run → enable integration.**
-The target head unit needs no Python, curl, or Go compiler. Manual triggering is only a debugging
+**The instrument cluster must display navigation arrows, and the head unit's existing
+`simplenavigation` service must expose navigation data the program can recognize.** The program
+reads this data and requests effects through SmartLight. It does not capture the display, decode
+raw iAP2, or modify the phone app. Navigation shown only on the center display, without arrows
+in the instrument cluster, cannot drive this integration.
+
+**In some cases, CarLife may not update the instrument-cluster navigation arrows. If the lights
+do not turn on, first check that the arrows appear normally and update with the current route guidance.**
+
+The current implementation selects contexts with `technology=appleCarPlay`. CarLife and other
+sources therefore require a compatible context from the head unit; other `technology` values
+still need adaptation. Commands, scripts, and logs retain their original `carplay` names.
+
+**Normal setup: deploy the program → configure endpoints → dry-run → enable integration.**
+The target head unit needs no additional runtime or compiler. Manual triggering is only a debugging
 tool for the lighting path, not the normal workflow; see [debugging](docs/debugging.md) (Chinese).
 
 > This independent community tool uses existing service access. It does not modify firmware,
-> brightness, or feature switches. The Go implementation has been tested with local mocks,
-> not validated on a physical vehicle. Start with stationary checks.
+> brightness, or feature switches. The program has passed integration testing on a physical
+> vehicle. Service endpoints and navigation compatibility may vary; start with stationary checks.
 
 ## 1. Prepare and deploy
 
 Requirements:
 
-- An iPhone connected through CarPlay, with navigation actively providing route guidance.
+- Active route guidance through CarPlay, or CarLife meeting the compatibility conditions above,
+  with navigation arrows visible in the instrument cluster.
 - An accessible `simplenavigation` service and SmartLight service on the head unit.
 - The required ID.Light navigation/turn features enabled in the vehicle HMI.
 - A runtime built for the target architecture; the default package is static Linux ARM64.
@@ -44,10 +58,9 @@ Keep the `smartlight-agl` binary, `carplay_light.sh`, `rollback.sh`, `trigger_li
 ### Download a GitHub Release
 
 Every push to `main`, or manual CI run on `main`, publishes a
-[GitHub Release](https://github.com/vw-id-headunit-lab/smartlight-agl/releases) only after both
-the Go and Python checks pass. Choose the `main-<full commit SHA>` release. For normal CarPlay
-integration, download **`smartlight-agl-go-linux-arm64.tar.gz`** and its `.sha256` file,
-not the separate Python debugging package.
+[GitHub Release](https://github.com/vw-id-headunit-lab/smartlight-agl/releases) only after
+the required CI checks pass. Choose the `main-<full commit SHA>` release. For navigation
+integration, download **`smartlight-agl-go-linux-arm64.tar.gz`** and its `.sha256` file.
 
 ```sh
 sha256sum -c smartlight-agl-go-linux-arm64.tar.gz.sha256
@@ -80,7 +93,8 @@ not your workstation or its Android partition. The tool does not create cross-sy
 
 ## 3. Start with a read-only dry-run
 
-Connect CarPlay and start a route in the phone's navigation app, then run:
+Connect CarPlay or a compatible CarLife source, start a route, and confirm navigation arrows
+appear in the instrument cluster, then run:
 
 ```sh
 # Read 10 polling rounds and exit. Without --apply, no effect is created.
@@ -95,9 +109,10 @@ Inspect the JSON logs:
 | `carplay_snapshot` | `active`, `stage`, `direction`, and `distance_m` when available |
 | `plan` / `dry_run` | A real effect was selected when eligible, without a write |
 
-`active=false` means no active CarPlay route was found; it is not an instruction to trigger a turn
-manually. If the current maneuver is absent, check CarPlay guidance, the registry result,
-credentials, and network context before adding `--apply`.
+`active=false` means no active compatible navigation context was found; it is not an instruction
+to trigger a turn manually. If the current maneuver is absent, check instrument-cluster arrows,
+navigation context compatibility, the registry result, credentials, and network context before
+adding `--apply`.
 
 ## 4. Enable automatic integration
 
@@ -120,16 +135,17 @@ The direct binary command is equivalent:
 > **Display flicker: use `--interval 2 --hold 3` (also the current defaults).**
 > An `--interval` below 2 seconds or a `--hold` below 3 seconds may cause the display to flicker.
 
-This consumes navigation from an **iPhone through CarPlay**, not a standalone Android AMap APK.
-Only the active `appleCarPlay` context's current `nextManeuver` is followed, not future maneuvers.
+The input is the navigation data used for instrument-cluster arrows. The current implementation
+follows only the active `appleCarPlay` context's current `nextManeuver`, including a compatible
+context supplied for CarLife; other context types require adaptation. Future maneuvers are not followed.
 Lighting purposes are matched by direction from the live catalog; movie numbers and resource UUIDs
 are not hard-coded.
 
 ### Default trigger policy
 
-- When the head unit does not publish `stage`, derive it from the distance: **at or below 50 meters is `execute`, otherwise `follow`**. Some units (HCN1.1.134 observed) return an empty string even at zero distance; units that provide `stage` keep their existing semantics. Units that report CarLife sessions as `appleCarPlay` get CarLife support from the same fallback.
+- When `stage` is omitted, null, or an empty string, a valid remaining distance of 50 meters or less means `execute` and a greater distance means `follow`. If the distance needed for inference is unusable or the reported stage is unrecognized, polling continues after skipping that sample. The same rule applies to CarLife sessions reported as `appleCarPlay`.
 - Trigger during `execute`, or during `follow` with a valid remaining distance at or below the current threshold.
-- **Speed adaptation is enabled by default**: a piecewise speed curve gives **500 meters at 90 km/h**, **1 kilometer at 120 km/h**, and **2 kilometers at ≥150 km/h**, clamped to **50–2000 meters**; unavailable speed falls back to **150 meters**.
+- **Speed adaptation is enabled by default.** The first `follow` prompt uses a **20-second** lead through **90 km/h**, with a 50-meter minimum. The threshold is **1 kilometer at 120 km/h** and **2 kilometers at ≥150 km/h**. If speed is unavailable, the threshold is **150 meters**.
 - When SmartLight accepts the first request, keep the trigger threshold and pause speed reads until navigation confirms the turn has ended. SmartLight controls playback timing.
 - Normalize `m/km/mi/yd/ft`. Do not guess turns from straight/unknown directions or invalid distances.
 - Open a 15-second request window when `follow` first meets the distance threshold and another when `execute` first begins. Stage regressions and element ID refreshes preserve the original deadlines.
@@ -160,18 +176,20 @@ It is not a server TTL. Network and cleanup confirmation affect timing, and queu
 
 | Current speed | Default follow threshold |
 |---|---|
-| 0–15 km/h | 50 meters (minimum) |
-| 30 km/h | 100 meters |
-| 60 km/h | 200 meters |
+| 0–9 km/h | 50 meters (minimum) |
+| 15 km/h | About 83 meters |
+| 30 km/h | About 167 meters |
+| 50 km/h | About 278 meters |
+| 60 km/h | About 333 meters |
 | 90 km/h | 500 meters |
 | 120 km/h | 1 kilometer |
 | ≥150 km/h | 2 kilometers (maximum) |
 
-Through 60 km/h, use `speed(km/h) / 3.6 * 12 seconds`, with a 50-meter minimum.
-Between 60 and 150 km/h, interpolate linearly between adjacent speed points in
-the table; at ≥150 km/h, use 2000 meters. `--follow-lead-time` scales this distance
-curve by `value / 12` before applying `--follow-min-distance` and
-`--follow-max-distance`; it does not imply a constant lead time at every speed.
+Through 90 km/h, use `speed(km/h) / 3.6 * 20 seconds`, with a 50-meter minimum.
+From 90 to 150 km/h, interpolate linearly between adjacent speed points in the table.
+At 150 km/h and above, use 2000 meters. `--follow-lead-time` sets the lead time
+through 90 km/h and scales the higher-speed distances by `value / 20`.
+`--follow-min-distance` and `--follow-max-distance` then bound the result.
 
 This is a tunable project policy, not an OEM rule or road-type detector. The same
 speed produces the same threshold regardless of road classification.
@@ -209,7 +227,7 @@ turn with an accepted request, `speed_sampling_paused` marks the retained values
 |---|---|---|
 | `--speed-base` | The `::99:8080` entry above | Service tree when `--speed-uri` is absent |
 | `--speed-unit` | `auto` | Read response unit or specify a confirmed unit |
-| `--follow-lead-time` | 12 seconds | Scale the default distance curve by value / 12, range 1–30 seconds |
+| `--follow-lead-time` | 20 seconds | Lead time through 90 km/h, range 1–30 seconds, with proportional scaling at higher speeds |
 | `--follow-min-distance` / `--follow-max-distance` | 50 / 2000 meters | Adaptive limits, range 1–2000 meters |
 | `--speed-interval` | 2 seconds | Minimum wait after a speed read completes; at least 1 second |
 | `--speed-timeout` | 1 second | Total speed read/discovery budget including GET retries |
@@ -314,7 +332,7 @@ The tool does not create a forwarder.
 
 **Manual lighting commands are debugging tools, not normal CarPlay setup steps.**
 
-- [Debugging](docs/debugging.md) (Chinese): catalog/probe commands, short manual triggers, and the independent Python tool.
+- [Debugging](docs/debugging.md) (Chinese): catalog/probe commands and short manual triggers.
 - [CarPlay details](docs/carplay.md) (Chinese): source validation, platform mappings, ownership, and startup boundaries.
 - [Testing](docs/testing.md) · [Design](docs/design.md) · [Migration](docs/go-migration.md) · [Troubleshooting](docs/troubleshooting.md).
 
@@ -323,7 +341,5 @@ toolchain. They use local mock services; cross-compilation and passing tests do 
 
 ## License
 
-Project-authored code uses [MIT](LICENSE). The Go package does not depend on Python
-and includes Go/standard-library notices and source hashes from the actual build
-toolchain. The separate Python debugging package retains its CPython parser
-licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) for each package's scope.
+Project-authored code uses [MIT](LICENSE). Release packages include third-party notices
+and source hashes from the actual build toolchain. See [third-party notices](THIRD_PARTY_NOTICES.md).

@@ -112,23 +112,27 @@ func (s *NavigationSource) event(row Object, contextURI, maneuverURI string) (*N
 	if id == "" {
 		return nil, errors.New("current maneuver requires id")
 	}
+	rawStage := row["stage"]
+	stage, stageIsString := rawStage.(string)
+	deriveStage := rawStage == nil || (stageIsString && stage == "")
+	if !deriveStage && !contains([]string{"follow", "prepare", "instruction", "execute"}, stage) {
+		return nil, fmt.Errorf("%w: unsupported maneuver stage", ErrSnapshotChanged)
+	}
 	var distance *float64
-	if value, present := row["distance"]; present && value != nil {
+	if value := row["distance"]; value != nil {
 		meters, err := DistanceMeters(value, row["distanceUnit"])
 		if err != nil {
+			if deriveStage {
+				return nil, fmt.Errorf("%w: cannot derive maneuver stage: %v", ErrSnapshotChanged, err)
+			}
 			return nil, err
 		}
 		distance = &meters
 	}
-	stage := str(row["stage"])
-	if !contains([]string{"follow", "prepare", "instruction", "execute"}, stage) {
-		// Some head units never publish a stage: HCN1.1.134 returns an empty
-		// string even at zero meters from the turn. Rejecting that stops the
-		// monitor before it can issue any request, so derive the stage from the
-		// remaining distance instead. Direction filtering, dedupe, hold windows
-		// and state handling are unchanged.
+	if deriveStage {
+		// HCN1.1.134 can report an empty stage even at the turn.
 		if distance == nil {
-			return nil, ErrSnapshotChanged
+			return nil, fmt.Errorf("%w: cannot derive maneuver stage without distance", ErrSnapshotChanged)
 		}
 		if *distance <= 50 {
 			stage = "execute"
@@ -420,6 +424,9 @@ func (s *NavigationSink) Start(ctx context.Context, event *NavigationEvent) (boo
 	s.Manager.BeforePost = func(ctx context.Context) (bool, error) {
 		var err error
 		sample, err = s.Source.recheckTurn(ctx, event)
+		if errors.Is(err, ErrSnapshotChanged) {
+			s.Manager.Client.Log("skipped", Object{"reason": "navigation_changed_during_preflight", "detail": err.Error()})
+		}
 		return sample != nil, err
 	}
 	ok, err := s.Manager.Start(ctx, Selector{Direction: event.Direction}, filepath.Join(s.Directory.Path, "carplay-"+id+".json"))
@@ -597,7 +604,6 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 			return nil
 		}
 	}
-	c.Fired = true
 	// Bound preflight and rechecks. An already-sent POST finishes independently
 	// so an accepted request can be tracked until navigation ends.
 	startCtx, cancel := context.WithTimeout(ctx, windowEnd.Sub(c.Clock()))
@@ -611,9 +617,14 @@ func (c *Controller) Step(ctx context.Context, event *NavigationEvent) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if errors.Is(err, ErrSnapshotChanged) {
+		// Preflight skipped the POST. Retry on a later poll in the same window.
+		return nil
+	}
 	if err != nil && !windowExpired {
 		return err
 	}
+	c.Fired = true
 	if started && c.Repeat {
 		c.NextCheck = c.Clock().Add(c.Hold)
 	} else if started || !windowExpired {
@@ -655,7 +666,11 @@ func RunMonitor(ctx context.Context, source *NavigationSource, controller *Contr
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if pollExpired || errors.Is(e, context.DeadlineExceeded) || errors.Is(e, ErrSnapshotChanged) || (!deadline.IsZero() && !controller.Clock().Before(deadline)) {
+			snapshotChanged := errors.Is(e, ErrSnapshotChanged)
+			if snapshotChanged {
+				log("skipped", Object{"reason": "navigation_snapshot_changed", "detail": e.Error()})
+			}
+			if pollExpired || errors.Is(e, context.DeadlineExceeded) || snapshotChanged || (!deadline.IsZero() && !controller.Clock().Before(deadline)) {
 				if e = cleanup(); e != nil {
 					return e
 				}
