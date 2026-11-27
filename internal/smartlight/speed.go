@@ -12,7 +12,7 @@ import (
 
 const (
 	DefaultSpeedBase  = "http://[fd53:7cb8:383:3::99]:8080/"
-	defaultFollowLead = 12
+	defaultFollowLead = 20
 	defaultFollowMin  = 50
 	defaultFollowMax  = 2000
 )
@@ -357,15 +357,13 @@ func (a *AdaptiveFollow) Refresh(ctx context.Context) error {
 	return nil // Optional speed failure never stops navigation or cleanup.
 }
 
-// defaultFollowDistance preserves the 12-second rule through 60 km/h, then
+// defaultFollowDistance uses the 20-second rule through 90 km/h, then
 // interpolates between 90/500, 120/1000 and 150/2000 (km/h and meters).
 // Current applies the configured lead-time scale and distance limits.
 func defaultFollowDistance(speedKPH float64) float64 {
 	switch {
-	case speedKPH <= 60:
-		return speedKPH / 3.6 * defaultFollowLead
 	case speedKPH <= 90:
-		return 200 + (speedKPH-60)/30*300
+		return speedKPH / 3.6 * defaultFollowLead
 	case speedKPH <= 120:
 		return 500 + (speedKPH-90)/30*500
 	case speedKPH < 150:
