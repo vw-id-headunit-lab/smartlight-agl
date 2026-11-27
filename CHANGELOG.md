@@ -4,7 +4,8 @@
 
 - Derive the maneuver stage from the distance when the head unit omits `stage`
   (observed empty even at zero meters on HCN1.1.134), instead of aborting the
-  monitor; stages that are provided keep their published meaning.
+  monitor; stages that are provided keep their published meaning. A head unit that reports CarLife sessions as
+  `appleCarPlay` therefore gets CarLife support from the same fallback.
 - Keep repeat-mode CarPlay requests while their exact queue item remains present,
   avoiding three-second revoke/recreate interruptions during execute and across
   follow-to-execute. Replace only after service-side removal; retain one-shot
