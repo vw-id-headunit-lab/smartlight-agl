@@ -143,6 +143,7 @@ are not hard-coded.
 
 ### Default trigger policy
 
+- When `stage` is omitted, null, or an empty string, a valid remaining distance of 50 meters or less means `execute` and a greater distance means `follow`. If the distance needed for inference is unusable or the reported stage is unrecognized, polling continues after skipping that sample. The same rule applies to CarLife sessions reported as `appleCarPlay`.
 - Trigger during `execute`, or during `follow` with a valid remaining distance at or below the current threshold.
 - **Speed adaptation is enabled by default.** The first `follow` prompt uses a **20-second** lead through **90 km/h**, with a 50-meter minimum. The threshold is **1 kilometer at 120 km/h** and **2 kilometers at ≥150 km/h**. If speed is unavailable, the threshold is **150 meters**.
 - When SmartLight accepts the first request, keep the trigger threshold and pause speed reads until navigation confirms the turn has ended. SmartLight controls playback timing.

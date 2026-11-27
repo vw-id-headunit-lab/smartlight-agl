@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Derive the maneuver stage from a valid distance when `stage` is omitted, null,
+  or an empty string, as observed on HCN1.1.134. Skip snapshots with unrecognized
+  stages or an unusable distance when inference is needed. Polling and the final
+  check before a lighting request can retry on the next cycle. This also applies
+  to CarLife sessions reported as `appleCarPlay`.
 - Keep repeat-mode CarPlay requests while their exact queue item remains present,
   avoiding three-second revoke/recreate interruptions during execute and across
   follow-to-execute. Replace only after service-side removal; retain one-shot
